@@ -1,0 +1,51 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add Nanoleaf light",
+        "description": "Enter the connection details for your Nanoleaf device.",
+        "data": {
+          "ip_address": "IP Address",
+          "port": "Port",
+          "model": "Model (e.g. NL67, NL45)"
+        },
+        "data_description": {
+          "ip_address": "IPv6 address of the device (ULA preferred, e.g. fd00::...). Found via mDNS or your router.",
+          "port": "CoAP port. Default is 5683.",
+          "model": "Device model from the label or mDNS. Required for NL45/NL55/NL58/NL62 (legacy key derivation)."
+        }
+      },
+      "pair": {
+        "title": "Pair Device",
+        "description": "**Device:** {name}\n**Model:** {model}\n**Address:** {host}\n\nEnter the pairing code printed on the device label.",
+        "data": {
+          "pairing_code": "Pairing Code"
+        },
+        "data_description": {
+          "pairing_code": "Code from the device label. NL67 and newer: 11-digit (e.g. 3394-532-2503). NL45 and older: 8-digit (e.g. 1234-5678). Dashes are optional."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate {name}",
+        "description": "The access token for **{name}** was rejected. Enter the pairing code again to re-pair.",
+        "data": {
+          "pairing_code": "Pairing Code"
+        },
+        "data_description": {
+          "pairing_code": "Code from the device label. NL67 and newer: 11-digit (e.g. 3394-532-2503). NL45 and older: 8-digit (e.g. 1234-5678). Dashes are optional."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to device. Check the address and that the device is reachable.",
+      "invalid_pin": "Pairing failed. Check the pairing code and that the device is not already paired to another controller.",
+      "already_configured": "Device is already configured.",
+      "unknown": "Unexpected error. Check the logs for details."
+    },
+    "abort": {
+      "already_configured": "Device is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  }
+}

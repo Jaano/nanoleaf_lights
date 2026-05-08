@@ -1,0 +1,51 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Lisa Nanoleaf'i lamp",
+        "description": "Sisesta oma Nanoleaf seadme ühenduse andmed.",
+        "data": {
+          "ip_address": "IP-aadress",
+          "port": "Port",
+          "model": "Mudel (nt NL67, NL45)"
+        },
+        "data_description": {
+          "ip_address": "Seadme IPv6-aadress (eelistatud ULA, nt fd00::…). Leitav mDNS kaudu või ruuterist.",
+          "port": "CoAP-port. Vaikimisi 5683.",
+          "model": "Seadme mudel sildilt või mDNS-ist. Nõutav NL45/NL55/NL58/NL62 puhul (vana võtmejohtimine)."
+        }
+      },
+      "pair": {
+        "title": "Ühenda lamp",
+        "description": "**Lamp:** {name}\n**Mudel:** {model}\n**Aadress:** {host}\n\nSisesta seadme sildil trükitud sidumiskood.",
+        "data": {
+          "pairing_code": "Sidumiskood"
+        },
+        "data_description": {
+          "pairing_code": "Kood seadme sildilt. NL67 ja uuemad: 11-kohaline (nt 3394-532-2503). NL45 ja vanemad: 8-kohaline (nt 1234-5678). Kriipsud on valikulised."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Autendi {name} uuesti",
+        "description": "Seadme **{name}** pääsutõend lükati tagasi. Sisesta sidumiskood uuesti, et seade uuesti siduda.",
+        "data": {
+          "pairing_code": "Sidumiskood"
+        },
+        "data_description": {
+          "pairing_code": "Kood seadme sildilt. NL67 ja uuemad: 11-kohaline (nt 3394-532-2503). NL45 ja vanemad: 8-kohaline (nt 1234-5678). Kriipsud on valikulised."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Seadmega ei saa ühendust. Kontrolli aadressi ja et seade on kättesaadav.",
+      "invalid_pin": "Sidumine ebaõnnestus. Kontrolli PIN-koodi ja et seade pole juba teise kontrolleriga seotud.",
+      "already_configured": "Seade on juba seadistatud.",
+      "unknown": "Ootamatu viga. Vaata loge täpsemate andmete saamiseks."
+    },
+    "abort": {
+      "already_configured": "Seade on juba seadistatud.",
+      "reauth_successful": "Uuesti autentimine õnnestus."
+    }
+  }
+}

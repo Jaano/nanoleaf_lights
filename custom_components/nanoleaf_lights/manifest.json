@@ -1,0 +1,13 @@
+{
+  "domain": "nanoleaf_lights",
+  "name": "Enhanced Nanoleaf Lights",
+  "version": "0.1.0",
+  "config_flow": true,
+  "dependencies": [],
+  "requirements": [
+    "aiocoap==0.4.17",
+    "cryptography>=42.0"
+  ],
+  "zeroconf": [{"type": "_ltpdu._udp.local."}],
+  "iot_class": "local_polling"
+}
