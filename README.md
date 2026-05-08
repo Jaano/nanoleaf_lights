@@ -1,6 +1,9 @@
 # Enhanced Nanoleaf Lights
 
-Home Assistant integration for Nanoleaf Essentials bulbs. Controls lights locally over Thread without the Nanoleaf cloud or Matter stack.
+Home Assistant integration for Nanoleaf Essentials bulbs that adds **scene activation** support — the one thing the standard Matter integration cannot do. Basic controls (power, brightness, color) are available too, but if you only need those, the built-in Matter integration is sufficient.
+
+Communicates directly over Thread using Nanoleaf's proprietary LTPDU protocol.
+Nanoleaf cloud is only used to resolve scene names from palette data (if needed), but the integration works without internet access and does not require a cloud account.
 
 ---
 
@@ -22,11 +25,11 @@ NL55/NL58/NL62 use the same protocol variant as NL45 and are expected to work bu
 
 | Feature | HA Integration |
 | --- | --- |
+| **Scenes / effects** | **yes — primary feature** |
 | Power on/off | yes |
 | Brightness | yes |
 | Hue / saturation | yes |
 | Color temperature | yes |
-| Scenes / effects | yes |
 | Identify (blink) | yes |
 | Thread diagnostics | yes (sensor entities) |
 | Device info | yes (device page) |
@@ -43,13 +46,15 @@ No extra Python dependencies beyond what ships with Home Assistant.
 
 ### Adding a Device
 
+> **Prerequisite:** The bulb must already be joined to your Thread network via Matter (e.g. using the Nanoleaf app or Apple Home). Matter is not used by this integration — only for the initial network join.
+
 1. Go to **Settings -> Devices & Services -> Add Integration** and search for **Nanoleaf LTPDU**.
 2. Devices on the local Thread network are auto-discovered via mDNS. Alternatively enter the address manually (IPv6, IPv4, or hostname).
 3. Enter the **Pairing Code** printed on the bulb.
 
 ### Scene Support
 
-Scenes are automatically resolved to their cloud names. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. See [SCENES.md](SCENES.md) for how palette matching works.
+Scenes are automatically resolved to their cloud names. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. This download can take several minutes to complete. See [SCENES.md](SCENES.md) for how palette matching works.
 
 ### Polling
 
