@@ -3,7 +3,7 @@
     "flow_title": "{name}",
     "step": {
       "user": {
-        "title": "Add Nanoleaf light",
+        "title": "Add Nanoleaf Light",
         "description": "Enter the connection details for your Nanoleaf device.",
         "data": {
           "ip_address": "IP Address",
@@ -12,8 +12,8 @@
         },
         "data_description": {
           "ip_address": "IPv6 address of the device (ULA preferred, e.g. fd00::...). Found via mDNS or your router.",
-          "port": "CoAP port. Default is 5683.",
-          "model": "Device model from the label or mDNS. Required for NL45/NL55/NL58/NL62 (legacy key derivation)."
+          "port": "CoAP port. Default is 5653. Older devices (NL45 and earlier) may use 5683.",
+          "model": "Device model from the label or mDNS. Required for NL45/NL55/NL58/NL62."
         }
       },
       "pair": {

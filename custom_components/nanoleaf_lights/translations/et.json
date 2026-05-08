@@ -12,13 +12,13 @@
         },
         "data_description": {
           "ip_address": "Seadme IPv6-aadress (eelistatud ULA, nt fd00::…). Leitav mDNS kaudu või ruuterist.",
-          "port": "CoAP-port. Vaikimisi 5683.",
-          "model": "Seadme mudel sildilt või mDNS-ist. Nõutav NL45/NL55/NL58/NL62 puhul (vana võtmejohtimine)."
+          "port": "CoAP-port. Vaikimisi 5653. Vanemad seadmed (NL45 ja varasemad) võivad kasutada 5683.",
+          "model": "Seadme mudel sildilt või mDNS-ist. Nõutav NL45/NL55/NL58/NL62 puhul."
         }
       },
       "pair": {
         "title": "Ühenda lamp",
-        "description": "**Lamp:** {name}\n**Mudel:** {model}\n**Aadress:** {host}\n\nSisesta seadme sildil trükitud sidumiskood.",
+        "description": "**Lamp:** {name}\n**Mudel:** {model}\n**Aadress:** {host}\n\nSisesta seadme sildile trükitud sidumiskood.",
         "data": {
           "pairing_code": "Sidumiskood"
         },

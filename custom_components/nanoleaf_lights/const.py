@@ -13,7 +13,7 @@ CONF_NAME = "name"
 CONF_EUI64 = "eui64"
 
 # Defaults
-DEFAULT_PORT = 5683
+DEFAULT_PORT = 5653
 
 # Coordinator
 UPDATE_INTERVAL = timedelta(seconds=5)

@@ -1,4 +1,4 @@
-# Nanoleaf LTPDU
+# Enhanced Nanoleaf Lights
 
 Home Assistant integration for Nanoleaf Essentials bulbs. Controls lights locally over Thread without the Nanoleaf cloud or Matter stack.
 
@@ -66,3 +66,9 @@ Devices are controlled via LTPDU — a CoAP/UDP protocol with X25519 key exchang
 - **Addressing:** IPv6 natively; IPv4 and hostname also work when NAT64 is enabled on the border router
 
 See [LTPDU.md](LTPDU.md) for the full protocol reference.
+
+---
+
+## License
+
+MIT License — Copyright (c) 2026 Jaano. See [LICENSE](LICENSE) for full text.
