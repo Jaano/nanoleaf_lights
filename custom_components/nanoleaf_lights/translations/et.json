@@ -35,6 +35,22 @@
         "data_description": {
           "pairing_code": "Kood seadme sildilt. NL67 ja uuemad: 11-kohaline (nt 3394-532-2503). NL45 ja vanemad: 8-kohaline (nt 1234-5678). Kriipsud on valikulised."
         }
+      },
+      "reconfigure_confirm": {
+        "title": "Uuesti seadistamine: {name}",
+        "description": "Uuenda seadme **{name}** ühenduse andmeid. Jäta sidumiskood tühjaks, et säilitada olemasolev pääsutõend (kasulik, kui muutus ainult IP-aadress).",
+        "data": {
+          "ip_address": "IP-aadress",
+          "port": "Port",
+          "model": "Mudel (nt NL67, NL45)",
+          "pairing_code": "Sidumiskood (valikuline)"
+        },
+        "data_description": {
+          "ip_address": "Seadme uus IPv6-aadress.",
+          "port": "CoAP-port. Vaikimisi 5653. Vanemad seadmed (NL45 ja varasemad) võivad kasutada 5683.",
+          "model": "Seadme mudel. Nõutav NL45/NL55/NL58/NL62 puhul.",
+          "pairing_code": "Jäta tühjaks, et säilitada praegune pääsutõend. Sisesta kood sildilt, et seade uuesti siduda."
+        }
       }
     },
     "error": {
@@ -45,7 +61,8 @@
     },
     "abort": {
       "already_configured": "Seade on juba seadistatud.",
-      "reauth_successful": "Uuesti autentimine õnnestus."
+      "reauth_successful": "Uuesti autentimine õnnestus.",
+      "reconfigure_successful": "Ühenduse andmed uuendati."
     }
   }
 }

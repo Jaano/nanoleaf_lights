@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-Effect = dict[str, str]
+Effect = dict[str, Any]
 RawEffect = dict[str, Any]
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,16 @@ class NanoleafCloudApi:
 
     @staticmethod
     def normalise_effect(e: RawEffect) -> Effect | None:
-        """Return {uuid, name, palette} or None when palette is absent."""
+        """Return {uuid, name, palette, type, [official]} or None when palette is absent.
+
+        Fields:
+            uuid     — effect UUID.
+            name     — display name.
+            palette  — concatenated rrggbb hex string.
+            type     — "music", "hsb", or "cct" based on effect_type / color_type.
+            official — True when the effect is Nanoleaf-curated (featured=true). Omitted
+                       for community effects.
+        """
         raw_palette: list[RawEffect] | None = e.get("palette")  # type: ignore[assignment]
         if not raw_palette:
             return None
@@ -86,11 +95,25 @@ class NanoleafCloudApi:
             _rrggbb(float(c["hue"]), float(c["saturation"]), float(c["brightness"]))
             for c in raw_palette
         )
-        return {
+
+        effect_type = str(e.get("effect_type") or "").lower()
+        color_type  = str(e.get("color_type")  or "").upper()
+        if effect_type == "music":
+            scene_type = "music"
+        elif color_type == "CCT":
+            scene_type = "cct"
+        else:
+            scene_type = "hsb"
+
+        result: Effect = {
             "uuid":    str(e.get("uuid") or ""),
             "name":    str(e.get("effect_name") or ""),
             "palette": palette_hex,
+            "type":    scene_type,
         }
+        if e.get("featured"):
+            result["official"] = True
+        return result
 
     @staticmethod
     def _write_scenes(scenes_path: Path, effects: list[Effect]) -> None:
@@ -168,25 +191,48 @@ class NanoleafCloudApi:
         effects: list[Effect],
         _progress: Callable[[str], None],
     ) -> tuple[list[Effect], int]:
-        """Remove duplicate effects by UUID; return (deduped, count_removed)."""
-        uuid_count: dict[str, int] = {}
+        """Remove duplicate effects; return (deduped, count_removed).
+
+        Two deduplication passes:
+        1. UUID duplicates — keep the first occurrence.
+        2. (name, palette) duplicates — keep the first UUID seen for that pair;
+           subsequent entries with the same name+palette but a different UUID
+           are dropped silently (they are the same scene re-uploaded by another
+           account).
+        """
+        before = len(effects)
+
+        # Pass 1: UUID dedup
+        seen_uuid: set[str] = set()
+        uuid_deduped: list[Effect] = []
+        uuid_dropped = 0
         for e in effects:
-            uuid_count[e["uuid"]] = uuid_count.get(e["uuid"], 0) + 1
-        duplicates = {uid: n for uid, n in uuid_count.items() if n > 1}
-        if not duplicates:
-            _progress("  No UUID duplicates.")
-            return effects, 0
-        _progress(f"  WARNING: {len(duplicates)} duplicate UUID(s) found — removing extras:")
-        for uid, n in duplicates.items():
-            name = next(e["name"] for e in effects if e["uuid"] == uid)
-            _progress(f"    {uid}  {name!r}  ({n}x)")
-        seen_final: set[str] = set()
-        deduped: list[Effect] = []
-        for e in effects:
-            if e["uuid"] not in seen_final:
-                seen_final.add(e["uuid"])
-                deduped.append(e)
-        return deduped, len(effects) - len(deduped)
+            if e["uuid"] in seen_uuid:
+                uuid_dropped += 1
+            else:
+                seen_uuid.add(e["uuid"])
+                uuid_deduped.append(e)
+        if uuid_dropped:
+            _progress(f"  Removed {uuid_dropped} UUID duplicate(s).")
+
+        # Pass 2: (name, palette) dedup — same content, different UUID
+        seen_np: set[tuple[str, str]] = set()
+        np_deduped: list[Effect] = []
+        np_dropped = 0
+        for e in uuid_deduped:
+            key = ((e.get("name") or "").strip().casefold(), (e.get("palette") or ""))
+            if key in seen_np:
+                np_dropped += 1
+            else:
+                seen_np.add(key)
+                np_deduped.append(e)
+        if np_dropped:
+            _progress(f"  Removed {np_dropped} name+palette duplicate(s) (different UUID, same content).")
+
+        total_removed = before - len(np_deduped)
+        if not total_removed:
+            _progress("  No duplicates found.")
+        return np_deduped, total_removed
 
     def iter_effect_pages(
         self, featured: bool, sort: str

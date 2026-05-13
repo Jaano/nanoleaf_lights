@@ -10,6 +10,13 @@ dependencies = [
     "zeroconf",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
 [project.scripts]
 nanoleaf = "cli:main"
 
@@ -69,4 +76,9 @@ ignore = [
 
     # Private member access is common in HA integrations accessing _transport etc.
     "SLF001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "T20",   # allow print() in tests
 ]

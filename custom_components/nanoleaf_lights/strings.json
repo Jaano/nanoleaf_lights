@@ -35,6 +35,22 @@
         "data_description": {
           "pairing_code": "Code from the device label. NL67 and newer: 11-digit (e.g. 3394-532-2503). NL45 and older: 8-digit (e.g. 1234-5678). Dashes are optional."
         }
+      },
+      "reconfigure_confirm": {
+        "title": "Reconfigure {name}",
+        "description": "Update the connection settings for **{name}**. Leave the pairing code blank to keep the existing token (useful when only the IP address changed).",
+        "data": {
+          "ip_address": "IP Address",
+          "port": "Port",
+          "model": "Model (e.g. NL67, NL45)",
+          "pairing_code": "Pairing Code (optional)"
+        },
+        "data_description": {
+          "ip_address": "New IPv6 address of the device.",
+          "port": "CoAP port. Default is 5653. Older devices (NL45 and earlier) may use 5683.",
+          "model": "Device model. Required for NL45/NL55/NL58/NL62.",
+          "pairing_code": "Leave blank to keep the current token. Enter the code from the device label to re-pair."
+        }
       }
     },
     "error": {
@@ -45,7 +61,8 @@
     },
     "abort": {
       "already_configured": "Device is already configured.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "Connection settings updated successfully."
     }
   }
 }

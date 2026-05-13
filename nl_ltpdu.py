@@ -513,6 +513,10 @@ class LtpduSession:
         self._model: str | None = model
         # Serialize all cipher-using operations.
         self._lock: asyncio.Lock = asyncio.Lock()
+        # Set True when encrypt() was called but decrypt() was skipped (timeout).
+        # The AES-CTR counter is then out of sync with the device; all further
+        # requests must fail immediately so the coordinator closes the session.
+        self._cipher_corrupted: bool = False
         # Stored for reauth(); set by auth().
         self._token: bytes | None = None
         # Populated by connect(); empty when only kex() was used.
@@ -872,6 +876,8 @@ class LtpduSession:
             RuntimeError on CoAP error or timeout.
         """
         async with self._lock:
+            if self._cipher_corrupted:
+                raise RuntimeError("Session cipher is corrupted (previous timeout); reconnect required")
             uri = _coap_uri(self._ip, self._port, "/nlltpdu")
             request = aiocoap.Message(
                 code=aiocoap.POST, payload=self.encrypt(plaintext), uri=uri
@@ -881,6 +887,7 @@ class LtpduSession:
                     self._coap.request(request).response, timeout=timeout
                 )
             except (TimeoutError, asyncio.TimeoutError) as e:
+                self._cipher_corrupted = True
                 raise RuntimeError(f"send_ltpdu timed out after {timeout}s") from e
             if not response.code.is_successful():
                 raise RuntimeError(f"send_ltpdu POST returned {response.code}")
@@ -916,6 +923,8 @@ class LtpduSession:
             RuntimeError on CoAP error or timeout.
         """
         async with self._lock:
+            if self._cipher_corrupted:
+                raise RuntimeError("Session cipher is corrupted (previous timeout); reconnect required")
             uri = _coap_uri(self._ip, self._port, "/nlltpdu")
             request = aiocoap.Message(
                 code=aiocoap.GET, payload=self.encrypt(plaintext), uri=uri
@@ -925,6 +934,7 @@ class LtpduSession:
                     self._coap.request(request).response, timeout=timeout
                 )
             except (TimeoutError, asyncio.TimeoutError) as e:
+                self._cipher_corrupted = True
                 raise RuntimeError(f"get_ltpdu timed out after {timeout}s") from e
             if not response.code.is_successful():
                 raise RuntimeError(f"get_ltpdu GET returned {response.code}")
@@ -970,6 +980,8 @@ class LtpduSession:
             RuntimeError if the device does not acknowledge the Observe option
                 or on CoAP error / timeout.
         """
+        if self._cipher_corrupted:
+            raise RuntimeError("Session cipher is corrupted (previous timeout); reconnect required")
         uri = _coap_uri(self._ip, self._port, "/nlltpdu")
         msg = aiocoap.Message(
             code=aiocoap.GET,
@@ -983,6 +995,7 @@ class LtpduSession:
         try:
             response = await asyncio.wait_for(req.response, timeout=timeout)
         except (TimeoutError, asyncio.TimeoutError) as e:
+            self._cipher_corrupted = True
             raise RuntimeError(f"observe_ltpdu timed out after {timeout}s") from e
         if not response.code.is_successful():
             raise RuntimeError(f"observe_ltpdu GET returned {response.code}")

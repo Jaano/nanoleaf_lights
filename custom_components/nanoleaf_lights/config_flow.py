@@ -285,3 +285,81 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"name": reauth_entry.data.get(CONF_NAME, "Nanoleaf light")},
         )
+
+    # ------------------------------------------------------------------
+    # Reconfigure flow
+    # ------------------------------------------------------------------
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Entry point for the Reconfigure option in the device page."""
+        return await self.async_step_reconfigure_confirm()
+
+    async def async_step_reconfigure_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Update IP address, port, model and optionally re-pair with a new PIN."""
+        errors: dict[str, str] = {}
+        reconfigure_entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            host = _strip_zone_id(user_input[CONF_IP_ADDRESS])
+            port = user_input.get(CONF_PORT, DEFAULT_PORT)
+            model = user_input.get(CONF_MODEL) or None
+            pin = (user_input.get("pairing_code") or "").strip()
+
+            _LOGGER.debug(
+                "reconfigure: host=%s port=%d model=%s re-pair=%s",
+                host, port, model, bool(pin),
+            )
+            try:
+                session = await _ltpdu_session().connect(host, port, model=model, timeout=10.0)
+                if pin:
+                    _LOGGER.debug("reconfigure: re-pairing with new PIN")
+                    token_bytes = await session.pair(pin)
+                    token = token_bytes.hex()
+                    _LOGGER.debug("reconfigure: re-paired, new token=%s", token)
+                else:
+                    _LOGGER.debug("reconfigure: verifying existing token at new address")
+                    existing_token = bytes.fromhex(reconfigure_entry.data[CONF_TOKEN])
+                    await session.auth(existing_token, timeout=10.0)
+                    token = reconfigure_entry.data[CONF_TOKEN]
+                await session.close()
+            except RuntimeError as exc:
+                _LOGGER.debug("reconfigure: RuntimeError: %s", exc)
+                if pin and ("pin" in str(exc).lower() or "unexpected" in str(exc).lower()):
+                    errors["base"] = "invalid_pin"
+                else:
+                    errors["base"] = "cannot_connect"
+            except Exception as exc:
+                _LOGGER.exception("reconfigure: unexpected error: %s", exc)
+                errors["base"] = "unknown"
+            else:
+                _LOGGER.debug("reconfigure: updating entry and reloading")
+                return self.async_update_reload_and_abort(
+                    reconfigure_entry,
+                    data={
+                        **reconfigure_entry.data,
+                        CONF_IP_ADDRESS: host,
+                        CONF_PORT: port,
+                        CONF_MODEL: model,
+                        CONF_TOKEN: token,
+                    },
+                    reason="reconfigure_successful",
+                )
+
+        data = reconfigure_entry.data
+        return self.async_show_form(
+            step_id="reconfigure_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_IP_ADDRESS, default=data.get(CONF_IP_ADDRESS, "")): str,
+                    vol.Optional(CONF_PORT, default=data.get(CONF_PORT, DEFAULT_PORT)): int,
+                    vol.Optional(CONF_MODEL, default=data.get(CONF_MODEL) or ""): str,
+                    vol.Optional("pairing_code", default=""): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders={"name": data.get(CONF_NAME, "Nanoleaf light")},
+        )
