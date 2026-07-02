@@ -12,14 +12,27 @@ from .coordinator import NanoleafLtpduCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.BUTTON, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.LIGHT,
+    Platform.BUTTON,
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a config entry: create coordinator, do first refresh."""
+    """Set up a config entry: create coordinator, do a non-blocking first refresh."""
     coordinator = NanoleafLtpduCoordinator(hass, entry)
 
-    await coordinator.async_config_entry_first_refresh()
+    # Do not use async_config_entry_first_refresh(): it raises
+    # ConfigEntryNotReady on failure, which puts the entry into "Needs
+    # attention" whenever the device is merely powered off. async_refresh()
+    # never raises; the coordinator keeps polling every UPDATE_INTERVAL and
+    # entities recover automatically once the device comes back. If the
+    # stored token is rejected, the coordinator raises ConfigEntryAuthFailed
+    # internally and the DataUpdateCoordinator machinery starts the reauth
+    # flow on its own.
+    await coordinator.async_refresh()
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -24,7 +24,7 @@ from .const import (
     STORAGE_DIR,
     UPDATE_INTERVAL,
 )
-from .nl_ltpdu import LtpduSession, SceneLookup, SessionExpiredError
+from .nl_ltpdu import AuthRejectedError, LtpduSession, SceneLookup, SessionExpiredError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.config_entry = entry
         self._session: LtpduSession | None = None
+        self.connected: bool = False
         self._consecutive_auth_failures: int = 0
         self._AUTH_FAILURE_THRESHOLD = 3
         self.scenes_path: Path = (
@@ -69,7 +70,13 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         model = data.get(CONF_MODEL)
         token = bytes.fromhex(data[CONF_TOKEN])
 
-        session = await LtpduSession.connect(ip, port, model=model, timeout=10.0)
+        try:
+            session = await LtpduSession.connect(ip, port, model=model, timeout=10.0)
+        except Exception:
+            self.connected = False
+            raise
+        # KEX succeeded — the device is reachable, even if auth fails below.
+        self.connected = True
         try:
             await session.auth(token)
         except Exception:
@@ -79,6 +86,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _safe_close(self) -> None:
         """Close the session without raising."""
+        self.connected = False
         if self._session is not None:
             try:
                 await self._session.close()
@@ -139,14 +147,17 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._session is None:
             try:
                 self._session = await self._open_session()
-            except RuntimeError as exc:
-                # Distinguish permanent auth rejection from transient errors.
-                if "rejected" in str(exc).lower():
-                    self._consecutive_auth_failures += 1
-                    if self._consecutive_auth_failures >= self._AUTH_FAILURE_THRESHOLD:
-                        raise ConfigEntryAuthFailed(
-                            f"Token rejected by device after {self._consecutive_auth_failures} attempts"
-                        ) from exc
+            except AuthRejectedError as exc:
+                # Device reachable but token invalid — re-pairing/onboarding needed.
+                self._consecutive_auth_failures += 1
+                if self._consecutive_auth_failures >= self._AUTH_FAILURE_THRESHOLD:
+                    raise ConfigEntryAuthFailed(
+                        f"Token rejected by device after {self._consecutive_auth_failures} attempts"
+                    ) from exc
+                raise UpdateFailed(
+                    f"Token rejected (attempt {self._consecutive_auth_failures})"
+                ) from exc
+            except Exception as exc:
                 raise UpdateFailed(f"Cannot open session: {exc}") from exc
             self._consecutive_auth_failures = 0
             # Populate static data right after a fresh connection.

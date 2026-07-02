@@ -460,6 +460,10 @@ class SessionExpiredError(RuntimeError):
     """
 
 
+class AuthRejectedError(RuntimeError):
+    """The device rejected the stored access token (re-pairing required)."""
+
+
 class LtpduSession:
     """Holds state for one authenticated LTPDU session with a device.
 
@@ -736,7 +740,7 @@ class LtpduSession:
         if len(raw) >= 4 and struct.unpack_from("!H", raw)[0] == 0x01F1:
             _, _, err_status = _decode_tlv(raw)
             _LOGGER.debug("Auth rejected (plaintext): raw=%s", raw.hex())
-            raise RuntimeError(f"Auth rejected by device — status 0x{err_status.hex()}")
+            raise AuthRejectedError(f"Auth rejected by device — status 0x{err_status.hex()}")
 
         # Auth success response is 12 bytes encrypted (4-byte TLV header +
         # 8-byte payload), NOT the 5-byte 0x01F1+status the reference code
@@ -749,7 +753,7 @@ class LtpduSession:
         tag, _, status = _decode_tlv(decrypted)
         if tag == 0x01F1 and len(status) >= 1 and status[0] != 0x00:
             _LOGGER.debug("Auth rejected (encrypted): raw=%s decrypted=%s", raw.hex(), decrypted.hex())
-            raise RuntimeError(
+            raise AuthRejectedError(
                 f"Auth rejected (encrypted error) — status 0x{status.hex()}"
             )
 
