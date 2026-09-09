@@ -50,6 +50,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.config_entry = entry
         self._session: LtpduSession | None = None
+        self.companion_device_entry: Any | None = None
         self.connected: bool = False
         self._consecutive_auth_failures: int = 0
         self._AUTH_FAILURE_THRESHOLD = 3

@@ -19,8 +19,14 @@ class NanoleafLtpduEntity(CoordinatorEntity[NanoleafLtpduCoordinator]):
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
 
+        if coordinator.companion_device_entry is not None:
+            self.device_entry = coordinator.companion_device_entry
+
     @property
-    def device_info(self) -> DeviceInfo:
+    def device_info(self) -> DeviceInfo | None:
+        if self.coordinator.companion_device_entry is not None:
+            return None
+
         device = (self.coordinator.data or {}).get("device") or {}
         entry = self.coordinator.config_entry
         eui64: str | None = device.get("eui64")

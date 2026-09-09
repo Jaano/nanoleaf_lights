@@ -64,5 +64,22 @@
       "reauth_successful": "Uuesti autentimine õnnestus.",
       "reconfigure_successful": "Ühenduse andmed uuendati."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Seadme leht",
+        "description": "Enhanced Nanoleaf'i olemid kuvatakse automaatselt sobival Matter/HomeKit seadme lehel, kui täpselt ühel native Nanoleaf seadmel on sama seerianumber: {serial}.",
+        "data": {
+          "companion_device_id": "Seadme leht"
+        },
+        "data_description": {
+          "companion_device_id": "Vali Automatic seerianumbri järgi sobitamiseks, Standalone eraldi Enhanced Nanoleaf'i seadme jaoks või konkreetne Matter/HomeKit seadme leht."
+        }
+      }
+    },
+    "error": {
+      "invalid_companion_device": "Vali üks kinnitatud Matter/HomeKit seade või jäta Standalone."
+    }
   }
 }

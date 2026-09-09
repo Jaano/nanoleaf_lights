@@ -64,5 +64,22 @@
       "reauth_successful": "Re-authentication was successful.",
       "reconfigure_successful": "Connection settings updated successfully."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Device page",
+        "description": "Enhanced Nanoleaf entities automatically appear on the matching Matter/HomeKit device page when exactly one native Nanoleaf device has the same serial number: {serial}.",
+        "data": {
+          "companion_device_id": "Device page"
+        },
+        "data_description": {
+          "companion_device_id": "Select Automatic to match by serial number, Standalone to keep a separate Enhanced Nanoleaf device, or a specific Matter/HomeKit device page."
+        }
+      }
+    },
+    "error": {
+      "invalid_companion_device": "Select one of the verified Matter/HomeKit devices, or keep Standalone."
+    }
   }
 }

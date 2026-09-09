@@ -6,9 +6,15 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlowWithReload
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import selector
 
 from .const import (
+    CONF_COMPANION_DEVICE_ID,
+    CONF_COMPANION_SERIAL_NUMBER,
+    CONF_DEVICE_LINK_MODE,
     CONF_EUI64,
     CONF_IP_ADDRESS,
     CONF_MODEL,
@@ -16,7 +22,11 @@ from .const import (
     CONF_PORT,
     CONF_TOKEN,
     DEFAULT_PORT,
+    DEVICE_LINK_MODE_AUTO,
+    DEVICE_LINK_MODE_COMPANION,
+    DEVICE_LINK_MODE_STANDALONE,
     DOMAIN,
+    NATIVE_COMPANION_DOMAINS,
 )
 
 if TYPE_CHECKING:
@@ -35,6 +45,65 @@ def _ltpdu_session() -> type[LtpduSession]:
 
 _LOGGER = logging.getLogger(__name__)
 
+_OPTION_AUTO = "__auto__"
+_OPTION_STANDALONE = "__standalone__"
+
+
+def _device_name(device: dr.DeviceEntry) -> str:
+    """Return the best display name for a device entry."""
+    return device.name_by_user or device.name or device.model or device.id
+
+
+def _config_entry_domain(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None:
+    """Return the owning config entry domain for a device."""
+    entry = hass.config_entries.async_get_entry(device.config_entry_id)
+    return entry.domain if entry is not None else None
+
+
+def _enhanced_serial(hass: HomeAssistant, config_entry: ConfigEntry) -> str | None:
+    """Return the latest known serial number for this Enhanced Nanoleaf entry."""
+    coordinator = getattr(config_entry, "runtime_data", None)
+    data = getattr(coordinator, "data", None) or {}
+    device = data.get("device") or {}
+    serial = device.get("serial_number")
+    if isinstance(serial, str) and serial:
+        return serial
+
+    serial = config_entry.options.get(CONF_COMPANION_SERIAL_NUMBER)
+    if isinstance(serial, str) and serial:
+        return serial
+
+    own_device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, config_entry.unique_id or config_entry.entry_id),
+        config_entry.entry_id,
+    )
+    serial = own_device.serial_number if own_device is not None else None
+    return serial if isinstance(serial, str) and serial else None
+
+
+def _native_nanoleaf_candidates(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    serial: str | None,
+) -> list[dr.DeviceEntry]:
+    """Return Matter/HomeKit Nanoleaf devices matching the Enhanced device serial."""
+    if not serial:
+        return []
+
+    device_registry = dr.async_get(hass)
+    candidates: list[dr.DeviceEntry] = []
+    for device in device_registry.devices.values():
+        if device.config_entry_id == config_entry.entry_id:
+            continue
+        if (device.manufacturer or "").casefold() != "nanoleaf":
+            continue
+        if device.serial_number != serial:
+            continue
+        if _config_entry_domain(hass, device) not in NATIVE_COMPANION_DOMAINS:
+            continue
+        candidates.append(device)
+    return sorted(candidates, key=_device_name)
+
 
 def _strip_zone_id(host: str) -> str:
     """Remove IPv6 zone ID suffix (e.g. '%eth0') from a host string."""
@@ -50,6 +119,12 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._discovery: dict[str, Any] = {}
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlowWithReload:
+        """Create the options flow."""
+        return NanoleafLtpduOptionsFlow()
 
     # ------------------------------------------------------------------
     # Zeroconf discovery
@@ -363,3 +438,125 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={"name": data.get(CONF_NAME, "Nanoleaf light")},
         )
+
+
+class NanoleafLtpduOptionsFlow(OptionsFlowWithReload):
+    """Handle options for Enhanced Nanoleaf Light."""
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Manage device-page linking options."""
+        serial = _enhanced_serial(self.hass, self.config_entry)
+        current_target = self.config_entry.options.get(CONF_COMPANION_DEVICE_ID)
+        candidates = self._selectable_candidates(
+            _native_nanoleaf_candidates(self.hass, self.config_entry, serial),
+            current_target,
+        )
+        candidate_map = {device.id: device for device in candidates}
+
+        if user_input is not None:
+            selected = user_input[CONF_COMPANION_DEVICE_ID]
+            if selected == _OPTION_AUTO:
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        CONF_DEVICE_LINK_MODE: DEVICE_LINK_MODE_AUTO,
+                    },
+                )
+
+            if selected == _OPTION_STANDALONE:
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        CONF_DEVICE_LINK_MODE: DEVICE_LINK_MODE_STANDALONE,
+                    },
+                )
+
+            target = candidate_map.get(selected)
+            if target is None:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self._schema(candidates, current_target),
+                    errors={"base": "invalid_companion_device"},
+                    description_placeholders={
+                        "serial": serial or "unknown",
+                    },
+                )
+
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_DEVICE_LINK_MODE: DEVICE_LINK_MODE_COMPANION,
+                    CONF_COMPANION_DEVICE_ID: target.id,
+                    CONF_COMPANION_SERIAL_NUMBER: target.serial_number or "",
+                },
+            )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self._schema(candidates, current_target),
+            description_placeholders={
+                "serial": serial or "unknown",
+            },
+        )
+
+    def _schema(
+        self,
+        candidates: list[dr.DeviceEntry],
+        current_target: Any,
+    ) -> vol.Schema:
+        """Return the options form schema."""
+        options: list[selector.SelectOptionDict] = [
+            {
+                "value": _OPTION_AUTO,
+                "label": "Automatic serial-number match",
+            },
+            {
+                "value": _OPTION_STANDALONE,
+                "label": "Standalone Enhanced Nanoleaf device",
+            }
+        ]
+        for device in candidates:
+            domain = _config_entry_domain(self.hass, device) or "unknown"
+            options.append(
+                {
+                    "value": device.id,
+                    "label": f"{_device_name(device)} ({domain})",
+                }
+            )
+
+        current_mode = self.config_entry.options.get(CONF_DEVICE_LINK_MODE)
+        candidate_ids = {device.id for device in candidates}
+        if current_mode == DEVICE_LINK_MODE_STANDALONE:
+            default = _OPTION_STANDALONE
+        elif current_target in candidate_ids:
+            default = current_target
+        else:
+            default = _OPTION_AUTO
+        return vol.Schema(
+            {
+                vol.Required(
+                    CONF_COMPANION_DEVICE_ID,
+                    default=default,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            }
+        )
+
+    @staticmethod
+    def _selectable_candidates(
+        candidates: list[dr.DeviceEntry],
+        current_target: Any,
+    ) -> list[dr.DeviceEntry]:
+        """Return verified candidate devices that can be selected safely."""
+        if len(candidates) <= 1:
+            return candidates
+        if isinstance(current_target, str):
+            return [device for device in candidates if device.id == current_target]
+        return []

@@ -85,6 +85,16 @@ To recover without removing and re-adding the integration:
 
 The device's existing entities, history, and automations are preserved.
 
+### Showing Entities on the Matter/HomeKit Device Page
+
+By default, Enhanced Nanoleaf Lights automatically shows its entities on the matching Matter/HomeKit device page when it finds exactly one native Nanoleaf device with the same serial number. If you want to change that behavior:
+
+1. Go to **Settings -> Devices & Services -> Enhanced Nanoleaf Lights** and open the device.
+2. Click **Configure**.
+3. Choose automatic matching, standalone mode, or the matching Matter/HomeKit device page.
+
+The Enhanced light entity stays separate from the Matter/HomeKit light entity, so scenes/effects remain available through the Enhanced light. If no verified serial match is available, the Enhanced entities stay on their standalone device page.
+
 ### Scene Support
 
 Scenes are automatically resolved to their cloud names. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. This download can take several minutes to complete. See [SCENES.md](SCENES.md) for how palette matching works.
