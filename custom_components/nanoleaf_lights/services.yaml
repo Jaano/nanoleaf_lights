@@ -1,0 +1,197 @@
+set_circadian_config:
+  name: Configure circadian lighting
+  description: Store a complete white-point schedule on the bulb. Sunrise/sunset mode also copies Home Assistant's clock, timezone and location to the bulb.
+  target:
+    entity:
+      integration: nanoleaf_lights
+  fields:
+    mode:
+      name: Schedule mode
+      required: true
+      selector:
+        select:
+          translation_key: circadian_mode
+          options:
+            - explicit
+            - sunrise_sunset
+    daylight_target_kelvin:
+      name: Daytime white point
+      required: true
+      selector:
+        number:
+          min: 1200
+          max: 6500
+          step: 1
+          unit_of_measurement: K
+          mode: box
+    evening_target_kelvin:
+      name: Evening white point
+      required: true
+      selector:
+        number:
+          min: 1200
+          max: 6500
+          step: 1
+          unit_of_measurement: K
+          mode: box
+    morning_target_kelvin:
+      name: Morning white point
+      required: true
+      selector:
+        number:
+          min: 1200
+          max: 6500
+          step: 1
+          unit_of_measurement: K
+          mode: box
+    rise_ramp_minutes:
+      name: Daytime ramp duration
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    fall_ramp_minutes:
+      name: Evening ramp duration
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    morning_ramp_minutes:
+      name: Morning ramp duration
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    rise_time_minutes:
+      name: Daytime start
+      description: Required for explicit mode; minutes after midnight, from 0 to 1439.
+      selector:
+        number:
+          min: 0
+          max: 1439
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    fall_time_minutes:
+      name: Evening start
+      description: Required for explicit mode; minutes after midnight, from 0 to 1439.
+      selector:
+        number:
+          min: 0
+          max: 1439
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    sunrise_offset_minutes:
+      name: Sunrise offset
+      description: Required for sunrise/sunset mode. Positive values start later; negative values start earlier.
+      selector:
+        number:
+          min: -1439
+          max: 1439
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    sunset_offset_minutes:
+      name: Sunset offset
+      description: Required for sunrise/sunset mode. Positive values start later; negative values start earlier.
+      selector:
+        number:
+          min: -1439
+          max: 1439
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    config_entry_id:
+      name: Integration entry ID
+      description: Select the integration entry directly when calling from a script.
+      advanced: true
+      selector:
+        text:
+
+set_device_time:
+  name: Set device time
+  description: Set the bulb's clock and timezone. Omitted values use the current time and Home Assistant's configured timezone.
+  target:
+    entity:
+      integration: nanoleaf_lights
+  fields:
+    epoch_seconds:
+      name: UTC time
+      description: Unix epoch seconds. Leave empty to use the current time.
+      selector:
+        number:
+          min: 0
+          step: 1
+          mode: box
+    timezone_offset_seconds:
+      name: Timezone offset
+      description: Offset from UTC in seconds. Leave empty to use Home Assistant's configured timezone.
+      selector:
+        number:
+          min: -86400
+          max: 86400
+          step: 1
+          unit_of_measurement: s
+          mode: box
+    config_entry_id:
+      name: Integration entry ID
+      advanced: true
+      selector:
+        text:
+
+set_device_location:
+  name: Set device location
+  description: Store the location used by the bulb's sunrise/sunset schedule.
+  target:
+    entity:
+      integration: nanoleaf_lights
+  fields:
+    latitude:
+      name: Latitude
+      required: true
+      selector:
+        number:
+          min: -90
+          max: 90
+          step: 0.001
+          mode: box
+    longitude:
+      name: Longitude
+      required: true
+      selector:
+        number:
+          min: -180
+          max: 180
+          step: 0.001
+          mode: box
+    config_entry_id:
+      name: Integration entry ID
+      advanced: true
+      selector:
+        text:
+
+get_motion_capabilities:
+  name: Get motion capabilities
+  description: Read supported scene motions, their options, and palette/storage limits. Returns devices keyed by integration entry ID.
+  target:
+    entity:
+      integration: nanoleaf_lights
+  fields:
+    config_entry_id:
+      name: Integration entry ID
+      advanced: true
+      selector:
+        text:

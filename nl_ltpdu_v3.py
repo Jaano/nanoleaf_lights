@@ -10,6 +10,7 @@ import colorsys
 import hashlib
 import hmac
 import json
+import math
 import secrets
 import struct
 from typing import Any
@@ -369,6 +370,341 @@ def parse_effects(data: bytes) -> list[dict[str, Any]]:
     return result
 
 
+_HOMEKIT_MODELS = {"NL45", "NL55", "NL58", "NL62"}
+_THREAD_MODELS = {"NL53", "NL54", "NL65", "NL67", "NL68", "SQUB01", "SQUB03"}
+_WIFI_MODELS = {
+    "NL71K1",
+    "NL71K2",
+    "NL72K1",
+    "NL72K3",
+    "NL72K4",
+    "NL72K6",
+    "NL72S1",
+    "NL72S2",
+    "NL73K1",
+    "NL73K2",
+    "NL73K3",
+    "NL75K1",
+    "NL75K2",
+    "NL75K3",
+    "NL75K4",
+    "NL75K5",
+    "NL75K6",
+    "NL77K1",
+    "SQCM01",
+    "SQCM02",
+    "SQFX03",
+    "SQFX04",
+    "SQSL01",
+}
+
+
+def _version_tuple(firmware: str | None) -> tuple[int, int, int] | None:
+    if not isinstance(firmware, str):
+        return None
+    pieces = firmware.split(".")
+    if len(pieces) != 3 or any(not part.isdigit() for part in pieces):
+        return None
+    return tuple(int(part) for part in pieces)
+
+
+def color_temperature_range(model: str | None, firmware: str | None) -> tuple[int, int]:
+    """Return known Kelvin bounds or a conservative range for unknown models."""
+    model = (model or "").upper()
+    special = {
+        "NL72K4": 2200,
+        "NL73K1": 2100,
+        "NL73K3": 2200,
+        "NL75K1": 2100,
+        "NL75K2": 2100,
+        "NL75K3": 2100,
+        "NL75K4": 2100,
+        "NL75K5": 2100,
+    }
+    if model in special:
+        return special[model], 6500
+    if model in _WIFI_MODELS:
+        return 2700, 6500
+    version = _version_tuple(firmware)
+    if model in _THREAD_MODELS and version is not None and version >= (5, 0, 0):
+        return 2100, 6500
+    if model in _HOMEKIT_MODELS | _THREAD_MODELS:
+        return 2127, 6535
+    return 2700, 6500
+
+
+def device_capabilities(model: str | None, firmware: str | None) -> dict[str, Any]:
+    """Describe known optional endpoints without enabling features for unknown models."""
+    model = (model or "").upper()
+    version = _version_tuple(firmware)
+    known = model in _HOMEKIT_MODELS | _THREAD_MODELS | _WIFI_MODELS
+    valid = known and version is not None
+    effect_v2 = valid and model in _THREAD_MODELS | _WIFI_MODELS and version >= (5, 0, 0)
+    threshold = (1, 3, 17) if model in _HOMEKIT_MODELS else (3, 5, 0)
+    if model in _WIFI_MODELS:
+        threshold = (2, 0, 10)
+    circadian = (
+        valid and model not in {"NL62", "NL72S1", "NL72S2", "SQSL01"} and version >= threshold
+    )
+    return {
+        "circadian": circadian,
+        "time": valid,
+        "location": valid,
+        "power_loss_recovery": valid,
+        "motions": valid,
+        "scene_protocol": "effectV2"
+        if effect_v2
+        else "ciOneD"
+        if model in _WIFI_MODELS
+        else "ciEssentials",
+        "palette_types": ["HSV"] if valid else [],
+        "max_palette_size": (10 if model in _WIFI_MODELS else 7) if valid else 0,
+        "max_stored_scenes": (32 if effect_v2 else 20)
+        if valid and model in _WIFI_MODELS
+        else 12
+        if valid
+        else 0,
+        "supports_static_scenes": effect_v2 and model in _WIFI_MODELS,
+    }
+
+
+async def _settings_capabilities(session: Any, timeout: float, feature: str) -> dict[str, Any]:
+    firmware = getattr(session, "_firmware_version", None)
+    model = getattr(session, "_model", None)
+    if firmware is None:
+        info = await session.query_device_info(timeout=timeout)
+        firmware = info.get("firmware_version")
+        model = info.get("model_number") or model
+        session._firmware_version = firmware
+        session._model = model
+    capabilities = device_capabilities(model, firmware)
+    if not capabilities[feature]:
+        raise NotImplementedError(f"{feature} is unavailable for this model and firmware")
+    return capabilities
+
+
+def _tlv8(tag: int, data: bytes) -> bytes:
+    if len(data) > 255:
+        raise ValueError("TLV8 value exceeds 255 bytes")
+    return bytes([tag, len(data)]) + data
+
+
+def _checked_number(value: Any, minimum: int, maximum: int, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"{label} must be an integer in {minimum}..{maximum}")
+    return value
+
+
+def _circadian_status(data: bytes, configuring: bool) -> None:
+    if not data or data[0] == 0:
+        return
+    if data[0] == 2:
+        message = (
+            "Set the device time, timezone and location before using sunrise/sunset settings"
+            if configuring
+            else "Set the device clock and circadian configuration before enabling"
+        )
+    elif data[0] == 3:
+        message = "Device rejected a circadian configuration value"
+    elif data[0] == 5:
+        message = "Device could not read its circadian configuration"
+    else:
+        message = f"Device returned circadian status {data[0]}"
+    raise RuntimeError(message)
+
+
+def _parse_circadian(data: bytes) -> dict[str, Any] | None:
+    if not data or data == b"\x00":
+        return None
+    if data[0] == 0:
+        data = data[1:]
+    try:
+        fields = _fields(data, length_size=1)
+    except RuntimeError:
+        _circadian_status(data, True)
+        raise
+    config: dict[str, Any] = {"version": None}
+    for tag, value in fields:
+        if tag == 1:
+            config["version"] = _uint(value, "circadian version", 1)
+        elif tag in (2, 3):
+            config["mode"] = "explicit" if tag == 3 else "sunriseSunset"
+            names = (
+                ("riseTimeOfDayMinutes", "fallTimeOfDayMinutes")
+                if tag == 3
+                else ("sunriseOffsetMinutes", "sunsetOffsetMinutes")
+            ) + (
+                "riseRampMinutes",
+                "fallRampMinutes",
+                "morningRampMinutes",
+                "daylightTargetK",
+                "eveningTargetK",
+                "morningTargetK",
+            )
+            for field, raw in _fields(value, length_size=1):
+                if 1 <= field <= 8:
+                    number = _uint(raw, names[field - 1], 2)
+                    if field <= 2 and tag == 2:
+                        number = int.from_bytes(raw, "big", signed=True)
+                    if field >= 6:
+                        number = 1_000_000 // number if number else 0
+                    config[names[field - 1]] = number
+    if "mode" not in config:
+        raise RuntimeError("Device returned no circadian mode")
+    return config
+
+
+def _encode_circadian(config: dict[str, Any], model: str | None, firmware: str | None) -> bytes:
+    if not isinstance(config, dict) or config.get("mode") not in {"explicit", "sunriseSunset"}:
+        raise ValueError("Circadian mode must be explicit or sunriseSunset")
+    explicit = config["mode"] == "explicit"
+    timing = (
+        ("riseTimeOfDayMinutes", "fallTimeOfDayMinutes")
+        if explicit
+        else ("sunriseOffsetMinutes", "sunsetOffsetMinutes")
+    )
+    names = (
+        *timing,
+        "riseRampMinutes",
+        "fallRampMinutes",
+        "morningRampMinutes",
+        "daylightTargetK",
+        "eveningTargetK",
+        "morningTargetK",
+    )
+    if any(name not in config for name in names):
+        raise ValueError("Circadian config requires all timing, ramp and white-point fields")
+    extras = set(config) - {*names, "mode", "version"}
+    if extras:
+        raise ValueError("Circadian config contains fields for another mode or unknown fields")
+    minimum_k, maximum_k = color_temperature_range(model, firmware)
+    pieces = []
+    for tag, name in enumerate(names, 1):
+        if tag <= 2:
+            number = _checked_number(config[name], 0 if explicit else -1439, 1439, name)
+        elif tag <= 5:
+            number = _checked_number(config[name], 0, 65535, name)
+        else:
+            kelvin = _checked_number(config[name], 1200, 6500, name)
+            kelvin = max(minimum_k, min(maximum_k, kelvin))
+            number = (1_000_000 + kelvin // 2) // kelvin
+        pieces.append(_tlv8(tag, number.to_bytes(2, "big", signed=tag <= 2 and not explicit)))
+    prefix = b"" if (model or "").upper() in _HOMEKIT_MODELS else _tlv8(1, b"\x00")
+    return prefix + _tlv8(3 if explicit else 2, b"".join(pieces))
+
+
+def _inner_ci(data: bytes, command: int) -> bytes:
+    if len(data) < 4:
+        raise RuntimeError("Truncated command response")
+    tag = int.from_bytes(data[:2], "big")
+    size = int.from_bytes(data[2:4], "big")
+    if tag not in {command, command | 0x8000} or size != len(data) - 4:
+        raise RuntimeError("Invalid command response")
+    return data[4:]
+
+
+_OPTION_SPECS = {
+    "transTime": ("int", 1, 600),
+    "delayTime": ("int", 0, 600),
+    "loop": ("bool", None, None),
+    "linDirection": ("string", None, None),
+    "mainColorProb": ("int", 0, 100),
+    "nColorsPerFrame": ("int", 2, 20),
+    "fadeOut": ("int", 0, 10),
+    "enableBackgroundColor": ("bool", None, None),
+    "blockSize": ("int", 3, 50),
+}
+_MOTION_DEFAULTS = {
+    "bounce": {"blockSize": 5, "transTime": 400},
+    "burst": {"delayTime": 24, "linDirection": "left", "transTime": 24},
+    "checkerboard": {"delayTime": 24, "loop": True, "transTime": 24},
+    "explodewheel": {"linDirection": "left", "nColorsPerFrame": 4, "transTime": 24},
+    "fade": {"transTime": 24},
+    "fireworks": {"enableBackgroundColor": False, "fadeOut": 6},
+    "flow": {"delayTime": 24, "linDirection": "left", "transTime": 24},
+    "heartbeat": {"delayTime": 15, "loop": False, "transTime": 24},
+    "highlight": {"mainColorProb": 40, "transTime": 24},
+    "intertwine": {"blockSize": 1, "fadeOut": 1, "transTime": 10},
+    "juggle": {"transTime": 450},
+    "melt": {"delayTime": 24, "loop": False, "transTime": 24},
+    "organic": {"linDirection": "left", "transTime": 24},
+    "radialpulse": {"delayTime": 24, "loop": True, "transTime": 24},
+    "radialsoundbar": {},
+    "radiate": {"delayTime": 24, "transTime": 24},
+    "random": {"transTime": 24},
+    "rollercoaster": {"enableBackgroundColor": False, "transTime": 24},
+    "soundbar": {"linDirection": "left"},
+    "streakingnotes": {},
+    "weave": {"delayTime": 24, "loop": False, "transTime": 24},
+    "wheel": {"linDirection": "left", "nColorsPerFrame": 4, "transTime": 24},
+    "stripes": {"linDirection": "right", "segment": 50, "transTime": 24},
+    "pulse": {"delayTime": 0, "loop": True, "transTime": 24},
+    "colorpop": {"enableBackgroundColor": False, "fadeOut": 6},
+}
+_MOTION_UUIDS = {
+    "bounce": "db8ce916-88de-484f-bdbb-afd732053105",
+    "burst": "713518c1-d560-47db-8991-de780af71d1e",
+    "checkerboard": "b75f1438-c37b-49c2-aa39-273bceb3d94b",
+    "colorpop": "e8b69f65-df13-480b-a949-db1bbc9a1cde",
+    "fade": "b3fd723a-aae8-4c99-bf2b-087159e0ef53",
+    "flow": "027842e4-e1d6-4a4c-a731-be74a1ebd4cf",
+    "highlight": "70b7c636-6bf8-491f-89c1-f4103508d642",
+    "random": "ba632d3e-9c2b-4413-a965-510c839b3f71",
+    "stripes": "7cdc7692-381a-4405-b25b-b477f116f7ca",
+    "fireworks": "5cec763a-6f32-45cf-a691-b81e176b6b4a",
+    "intertwine": "5c4d343f-8eca-47e9-8c01-92662dff4eb6",
+    "juggle": "29929fc2-6905-41c0-a7d7-1582a8c11f17",
+    "melt": "30a017d4-e6a5-4647-8c41-5a7cd38ff907",
+    "organic": "1dab05d3-07bf-4648-9d48-db8dd196ed28",
+    "pulse": "0794a6b3-f6cc-452d-a900-30081604b7ec",
+    "radialsoundbar": "0349fc36-7727-4ebc-bc1b-a0021c55038e",
+    "radiate": "e0ce975f-59e0-4d2e-872c-4856b79a36e9",
+    "rollercoaster": "e2eb1818-07ac-495f-a10d-7c192d7df705",
+    "soundbar": "fe0d0ba8-741f-4210-940c-454eceed010f",
+    "streakingnotes": "337784c0-6c98-447a-8a9f-fc6ac44a8024",
+    "weave": "ac8fb29a-333d-4de8-a95e-211cecc31ae1",
+    "wheel": "6970681a-20b5-4c5e-8813-bdaebc4ee4fa",
+}
+
+
+def _motion_info(name: str, motion_id: int | None = None, legacy: bool = False) -> dict[str, Any]:
+    defaults = dict(_MOTION_DEFAULTS.get(name, {}))
+    if legacy:
+        defaults.update(
+            {
+                "fade": {"delayTime": 0, "loop": True},
+                "flow": {"loop": True},
+                "highlight": {"delayTime": 15},
+                "random": {"delayTime": 0},
+            }.get(name, {})
+        )
+    options = []
+    for option, default in defaults.items():
+        kind, minimum, maximum = _OPTION_SPECS.get(option, ("int", 0, 100))
+        if name == "intertwine" and option in {"blockSize", "fadeOut"}:
+            minimum, maximum = (1, 20) if option == "blockSize" else (0, 20)
+        item = {"name": option, "type": kind, "default": default}
+        if minimum is not None:
+            item.update({"min": minimum, "max": maximum})
+        if option == "linDirection":
+            item["values"] = (
+                ["left", "right"] if name == "stripes" else ["left", "right", "up", "down", "none"]
+            )
+        options.append(item)
+    result: dict[str, Any] = {
+        "name": name,
+        "type": "rhythm"
+        if name in {"colorpop", "fireworks", "radialsoundbar", "soundbar", "streakingnotes"}
+        else "color",
+        "options": options,
+    }
+    if motion_id is not None:
+        result["id"] = motion_id
+    if name in _MOTION_UUIDS:
+        result["uuid"] = _MOTION_UUIDS[name]
+    return result
+
+
 class V3Controls:
     """Legacy-compatible public control methods using the secure v3 channel."""
 
@@ -381,7 +717,8 @@ class V3Controls:
         # Tag 6 contains the EUI-64 address.
         fields = dict(_fields(await self._request("di", timeout=timeout)))
         firmware = fields.get(254, b"")
-        return {
+        model = _text(fields.get(11, b"")).upper()
+        info = {
             "hardware_version": _text(fields.get(3, b"")),
             "firmware_version": ".".join(map(str, firmware))
             if len(firmware) == 3
@@ -389,8 +726,12 @@ class V3Controls:
             "serial_number": _text(fields.get(4, b"")),
             "eui64": fields.get(6, b"").hex().upper(),
             "device_code": _text(fields.get(10, b"")),
-            "model_number": "NL" + _text(fields[11]) if 11 in fields else "",
+            "model_number": model if model.startswith("NL") else "NL" + model if model else "",
         }
+        self._firmware_version = info["firmware_version"]
+        if info["model_number"]:
+            self._model = info["model_number"]
+        return info
 
     async def query_light_state(self, timeout: float = 10.0) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -424,11 +765,14 @@ class V3Controls:
         writes = []
         if on is not None:
             writes.append(("oo", bytes([1 if on else 0])))
+        minimum_k, maximum_k = color_temperature_range(
+            getattr(self, "_model", None), getattr(self, "_firmware_version", None)
+        )
         for suffix, value, maximum, minimum in (
             ("pb", brightness, 100, 0),
             ("hu", hue, 360, 0),
             ("sa", saturation, 100, 0),
-            ("ct", color_temp, 6500, 1200),
+            ("ct", color_temp, maximum_k, minimum_k),
         ):
             if value is not None:
                 if not minimum <= value <= maximum:
@@ -508,6 +852,185 @@ class V3Controls:
             if await self.get_scene_name(scene_id, timeout=timeout) == name:
                 return scene_id
         return b""
+
+    async def query_capabilities(self, timeout: float = 10.0) -> dict[str, Any]:
+        if getattr(self, "_firmware_version", None) is None:
+            info = await self.query_device_info(timeout=timeout)
+            self._firmware_version = info.get("firmware_version")
+            self._model = info.get("model_number") or getattr(self, "_model", None)
+        return device_capabilities(getattr(self, "_model", None), self._firmware_version)
+
+    async def query_circadian_settings(self, timeout: float = 10.0) -> dict[str, Any]:
+        capabilities = await _settings_capabilities(self, timeout, "circadian")
+        endpoint = "lb/0/ac/en" if capabilities["scene_protocol"] == "effectV2" else "ac/en"
+        enabled = await self._request(endpoint, timeout=timeout)
+        if len(enabled) == 2 and enabled[0] == 0:
+            enabled = enabled[1:]
+        flag = _uint(enabled, "circadian enabled", 1)
+        if flag not in (0, 1):
+            _circadian_status(enabled, False)
+        raw = await self._request("ac", timeout=timeout)
+        return {"config": _parse_circadian(raw), "enabled": bool(flag)}
+
+    async def set_circadian_config(self, config: dict[str, Any], timeout: float = 10.0) -> None:
+        await _settings_capabilities(self, timeout, "circadian")
+        payload = _encode_circadian(config, self._model, self._firmware_version)
+        response = await self._request("ac", payload, method=1, timeout=timeout)
+        _circadian_status(response, True)
+
+    async def set_circadian_enabled(self, enabled: bool, timeout: float = 10.0) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("Circadian enabled must be a boolean")
+        capabilities = await _settings_capabilities(self, timeout, "circadian")
+        endpoint = "lb/0/ac/en" if capabilities["scene_protocol"] == "effectV2" else "ac/en"
+        response = await self._request(endpoint, bytes([int(enabled)]), method=1, timeout=timeout)
+        _circadian_status(response, False)
+        if enabled:
+            await self.set_power(True, timeout=timeout)
+
+    async def query_device_time(self, timeout: float = 10.0) -> dict[str, int]:
+        await _settings_capabilities(self, timeout, "time")
+        epoch = await self._request("tm", timeout=timeout)
+        zone = await self._request("tz", timeout=timeout)
+        return {
+            "epoch_seconds": _uint(epoch, "device time", 8),
+            "timezone_offset_seconds": int.from_bytes(zone, "big", signed=True)
+            if len(zone) == 8
+            else _uint(zone, "device timezone", 8),
+        }
+
+    async def set_device_time(
+        self, epoch_seconds: int, timezone_offset_seconds: int | None = None, timeout: float = 10.0
+    ) -> None:
+        epoch = _checked_number(epoch_seconds, 0, (1 << 64) - 1, "epoch_seconds")
+        zone = None
+        if timezone_offset_seconds is not None:
+            zone = _checked_number(
+                timezone_offset_seconds, -(1 << 63), (1 << 63) - 1, "timezone_offset_seconds"
+            )
+        await _settings_capabilities(self, timeout, "time")
+        await self._request("tm", epoch.to_bytes(8, "big"), method=1, timeout=timeout)
+        if zone is not None:
+            await self._request(
+                "tz", zone.to_bytes(8, "big", signed=True), method=1, timeout=timeout
+            )
+
+    async def query_device_location(self, timeout: float = 10.0) -> dict[str, float]:
+        await _settings_capabilities(self, timeout, "location")
+        raw = await self._request("lglt", timeout=timeout)
+        if len(raw) != 8:
+            raise RuntimeError("Invalid device location length")
+        longitude, latitude = struct.unpack(">ii", raw)
+        return {"latitude": latitude / 1000, "longitude": longitude / 1000}
+
+    async def set_device_location(
+        self, latitude: float, longitude: float, timeout: float = 10.0
+    ) -> None:
+        for value, label, maximum in ((latitude, "latitude", 90), (longitude, "longitude", 180)):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not -maximum <= value <= maximum
+            ):
+                raise ValueError(f"{label} must be finite and in {-maximum}..{maximum}")
+        await _settings_capabilities(self, timeout, "location")
+        payload = struct.pack(
+            ">ii", math.floor(longitude * 1000 + 0.5), math.floor(latitude * 1000 + 0.5)
+        )
+        await self._request("lglt", payload, method=1, timeout=timeout)
+
+    async def query_power_loss_recovery(self, timeout: float = 10.0) -> bool:
+        capabilities = await _settings_capabilities(self, timeout, "power_loss_recovery")
+        if capabilities["scene_protocol"] == "effectV2":
+            raw = await self._request("lb/0/plr", timeout=timeout)
+            if not raw or raw[0] not in (1, 2):
+                raise RuntimeError("Invalid power-loss recovery state")
+            return raw[0] == 2
+        request = b"\x09\x02\x00\x00"
+        raw = _inner_ci(await self._request("ci", request, method=1, timeout=timeout), 0x0902)
+        if len(raw) != 1 or raw[0] not in (0, 1):
+            raise RuntimeError("Invalid power-loss recovery state")
+        return raw[0] == 1
+
+    async def set_power_loss_recovery(self, enabled: bool, timeout: float = 10.0) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("Power-loss recovery enabled must be a boolean")
+        capabilities = await _settings_capabilities(self, timeout, "power_loss_recovery")
+        if capabilities["scene_protocol"] == "effectV2":
+            await self._request(
+                "lb/0/plr", bytes([2 if enabled else 1, 0]), method=1, timeout=timeout
+            )
+        else:
+            raw = await self._request(
+                "ci", b"\x09\x01\x00\x01" + bytes([int(enabled)]), method=1, timeout=timeout
+            )
+            if raw:
+                value = _inner_ci(raw, 0x0901)
+                if value and any(value):
+                    raise RuntimeError("Device rejected power-loss recovery setting")
+
+    async def query_motion_capabilities(self, timeout: float = 10.0) -> dict[str, Any]:
+        capabilities = await _settings_capabilities(self, timeout, "motions")
+        motions = []
+        if capabilities["scene_protocol"] == "effectV2":
+            data = _fields(await self._request("effect/motions", timeout=timeout))
+            if data:
+                tag, identifiers = data[0]
+                if tag != 10 or len(identifiers) % 4:
+                    raise RuntimeError("Invalid motion list")
+                for offset in range(0, len(identifiers), 4):
+                    motion_id = int.from_bytes(identifiers[offset : offset + 4], "big")
+                    name = _MOTIONS.get(motion_id)
+                    if name in _MOTION_DEFAULTS:
+                        motions.append(_motion_info(name, motion_id))
+                    else:
+                        motions.append(
+                            {
+                                "id": motion_id,
+                                "name": name or f"Motion 0x{motion_id:08x}",
+                                "type": "unknown",
+                                "options": [],
+                            }
+                        )
+        elif capabilities["scene_protocol"] == "ciOneD":
+            response = await self._request("ci", b"\x01\x07\x00\x00", method=1, timeout=timeout)
+            plugins = json.loads(_inner_ci(response, 0x0107))
+            if not isinstance(plugins, list) or any(
+                not isinstance(plugin, str) for plugin in plugins
+            ):
+                raise RuntimeError("Invalid motion plugin list")
+            uuids = {uuid: name for name, uuid in _MOTION_UUIDS.items()}
+            for plugin in plugins:
+                name = uuids.get(plugin.lower())
+                motions.append(
+                    _motion_info(name, legacy=True)
+                    if name
+                    else {"uuid": plugin, "name": plugin, "type": "unknown", "options": []}
+                )
+        else:
+            baseline = (
+                ["fade", "flow", "highlight", "random", "stripes"]
+                if self._model == "NL62"
+                else ["fade", "highlight", "random"]
+            )
+            motions = [_motion_info(name, legacy=True) for name in baseline]
+        return {
+            "motions": motions,
+            "motion_source": "profile"
+            if capabilities["scene_protocol"] == "ciEssentials"
+            else "device",
+            **{
+                key: capabilities[key]
+                for key in (
+                    "palette_types",
+                    "max_palette_size",
+                    "max_stored_scenes",
+                    "supports_static_scenes",
+                    "scene_protocol",
+                )
+            },
+        }
 
     async def _thread_flags(
         self, endpoint: str, flags: tuple[str, ...], timeout: float
@@ -619,6 +1142,8 @@ class LtpduV3Session(V3Controls):
         self._transport = transport
         self._protocol = protocol
         self._name = name
+        self._model = model
+        self._firmware_version: str | None = None
         self._group = 2 if model in {"NL45", "NL55", "NL58", "NL62"} else 0
         self._client_id = 0xFFFF
         self._cipher: SecureCipher | None = None

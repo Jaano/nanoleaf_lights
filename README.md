@@ -1,6 +1,6 @@
 # Enhanced Nanoleaf Lights
 
-Home Assistant integration for Nanoleaf Essentials bulbs that adds **scene activation** support — the one thing the standard Matter integration cannot do. Basic controls (power, brightness, color) are available too, but if you only need those, the built-in Matter integration is sufficient.
+Home Assistant integration for Nanoleaf Essentials bulbs with scene activation, circadian lighting, device settings, and diagnostics alongside power, brightness, and color controls.
 
 Communicates directly over Thread using Nanoleaf's proprietary LTPDU protocol.
 Nanoleaf cloud is only used to resolve scene names from palette data (if needed), but the integration works without internet access and does not require a cloud account.
@@ -30,6 +30,10 @@ NL55/NL58/NL62 use the same protocol variant as NL45 and are expected to work bu
 | Brightness | yes |
 | Hue / saturation | yes |
 | Color temperature | yes |
+| Auto Circadian Lighting | switch and schedule action |
+| Clock, timezone, and location | actions and synchronization button |
+| Power Loss Recovery | configuration switch |
+| Motion capabilities | diagnostic sensor and response action |
 | Identify (blink) | yes |
 | Thread diagnostics | yes (sensor entities) |
 | Device info | yes (device page) |
@@ -85,23 +89,43 @@ To recover without removing and re-adding the integration:
 
 The device's existing entities, history, and automations are preserved.
 
-### Showing Entities on the Matter/HomeKit Device Page
-
-By default, Enhanced Nanoleaf Lights automatically shows its entities on the matching Matter/HomeKit device page when it finds exactly one native Nanoleaf device with the same serial number. If you want to change that behavior:
-
-1. Go to **Settings -> Devices & Services -> Enhanced Nanoleaf Lights** and open the device.
-2. Click **Configure**.
-3. Choose automatic matching, standalone mode, or the matching Matter/HomeKit device page.
-
-The Enhanced light entity stays separate from the Matter/HomeKit light entity, so scenes/effects remain available through the Enhanced light. If no verified serial match is available, the Enhanced entities stay on their standalone device page.
-
 ### Scene Support
 
 New firmware supplies scene names directly. For older firmware, names are resolved from the local scene database. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. This download can take several minutes to complete. See [SCENES.md](SCENES.md) for how palette matching works.
 
 ### Polling
 
-The integration polls every 5 seconds. Device info, scene list, and scene names are fetched once on first connect and cached until the integration is reloaded. Session expiry triggers automatic re-authentication.
+The integration polls light state every 5 seconds and optional settings every 60 seconds. Device info, scene lists, and motion capabilities are fetched after connecting. Session expiry triggers automatic re-authentication.
+
+### Circadian lighting and device settings
+
+Supported bulbs expose **Auto Circadian Lighting** and **Power Loss Recovery** configuration switches, a **Sync Circadian clock and location** button, and a **Motion capabilities** diagnostic sensor. Enable the diagnostic sensor in the entity settings to inspect its animations and parameter attributes. Availability depends on the bulb's model, firmware, and successful settings readback.
+
+Configure the schedule through **Developer Tools → Actions → Enhanced Nanoleaf Lights: Configure circadian lighting** (`nanoleaf_lights.set_circadian_config`). Supply all three white points, all three ramp durations, and the two timing fields for the selected mode. Fixed times are minutes after midnight; sunrise/sunset offsets are signed minutes. White points are clamped to the bulb's supported range.
+
+```yaml
+action: nanoleaf_lights.set_circadian_config
+target:
+  entity_id: light.nanoleaf_bulb
+data:
+  mode: sunrise_sunset
+  daylight_target_kelvin: 6500
+  evening_target_kelvin: 2100
+  morning_target_kelvin: 4000
+  rise_ramp_minutes: 30
+  fall_ramp_minutes: 60
+  morning_ramp_minutes: 15
+  sunrise_offset_minutes: -15
+  sunset_offset_minutes: 30
+```
+
+For `explicit` mode, replace the two offsets with `rise_time_minutes` and `fall_time_minutes` (0–1439). Saving a sunrise/sunset schedule and enabling Auto Circadian Lighting synchronize the bulb's clock, timezone offset, and location from Home Assistant. Enabling Auto Circadian Lighting also turns the bulb on. These writes happen only when you invoke a control; discovery and polling do not change settings. The switch attributes show the stored schedule, clock, and location.
+
+`nanoleaf_lights.set_device_time` accepts optional `epoch_seconds` and `timezone_offset_seconds`; omitted values use the current time and Home Assistant's timezone at the selected date. `nanoleaf_lights.set_device_location` accepts `latitude` and `longitude`. Use the synchronization button after timezone or daylight-saving changes; the bulb stores a UTC offset rather than a timezone name. The synchronization button is available only when Auto Circadian Lighting is supported and its enabled state has been read successfully; it remains available when the feature is switched off.
+
+`nanoleaf_lights.get_motion_capabilities` returns supported animations, their known parameter types/ranges/defaults, and palette/storage limits. Older firmware may expose a fixed model profile; the response's `motion_source` distinguishes this from a device-reported list. This action queries capabilities without playing an animation.
+
+NL67 firmware 5.0.0 and newer exposes **2100–6500 K** through the light entity. Temperature limits also apply when sending commands and saving circadian white points.
 
 ---
 

@@ -12,17 +12,6 @@ CONF_TOKEN = "token"
 CONF_NAME = "name"
 CONF_EUI64 = "eui64"
 
-# Config entry option keys
-CONF_DEVICE_LINK_MODE = "device_link_mode"
-CONF_COMPANION_DEVICE_ID = "companion_device_id"
-CONF_COMPANION_SERIAL_NUMBER = "companion_serial_number"
-
-DEVICE_LINK_MODE_STANDALONE = "standalone"
-DEVICE_LINK_MODE_AUTO = "auto"
-DEVICE_LINK_MODE_COMPANION = "companion"
-
-NATIVE_COMPANION_DOMAINS = {"matter", "homekit_controller"}
-
 # Defaults
 DEFAULT_PORT = 5653
 

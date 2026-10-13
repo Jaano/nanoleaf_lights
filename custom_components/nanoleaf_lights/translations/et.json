@@ -69,21 +69,125 @@
       "reconfigure_successful": "Ühenduse andmed uuendati."
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Seadme leht",
-        "description": "Enhanced Nanoleaf'i olemid kuvatakse automaatselt sobival Matter/HomeKit seadme lehel, kui täpselt ühel native Nanoleaf seadmel on sama seerianumber: {serial}.",
-        "data": {
-          "companion_device_id": "Seadme leht"
+  "entity": {
+    "switch": {
+      "circadian": {
+        "name": "Auto Circadian Lighting"
+      },
+      "power_loss_recovery": {
+        "name": "Olekutaastus pärast voolukatkestust"
+      }
+    },
+    "button": {
+      "sync_clock_location": {
+        "name": "Sünkrooni ööpäevavalgustuse kell ja asukoht"
+      }
+    },
+    "sensor": {
+      "motion_capabilities": {
+        "name": "Animatsioonide võimalused"
+      }
+    }
+  },
+  "selector": {
+    "circadian_mode": {
+      "options": {
+        "explicit": "Kindlad kellaajad",
+        "sunrise_sunset": "Päikesetõus ja -loojang"
+      }
+    }
+  },
+  "services": {
+    "set_circadian_config": {
+      "name": "Seadista ööpäevavalgustus",
+      "description": "Salvesta lambile täielik valgepunkti ajakava. Päikesetõusu ja -loojangu režiim kopeerib lambile ka Home Assistanti kella, ajavööndi ja asukoha.",
+      "fields": {
+        "mode": {
+          "name": "Ajakava režiim"
         },
-        "data_description": {
-          "companion_device_id": "Vali Automatic seerianumbri järgi sobitamiseks, Standalone eraldi Enhanced Nanoleaf'i seadme jaoks või konkreetne Matter/HomeKit seadme leht."
+        "daylight_target_kelvin": {
+          "name": "Päevane valgepunkt"
+        },
+        "evening_target_kelvin": {
+          "name": "Õhtune valgepunkt"
+        },
+        "morning_target_kelvin": {
+          "name": "Hommikune valgepunkt"
+        },
+        "rise_ramp_minutes": {
+          "name": "Päevase ülemineku kestus"
+        },
+        "fall_ramp_minutes": {
+          "name": "Õhtuse ülemineku kestus"
+        },
+        "morning_ramp_minutes": {
+          "name": "Hommikuse ülemineku kestus"
+        },
+        "rise_time_minutes": {
+          "name": "Päevase režiimi algus",
+          "description": "Nõutav kindlate kellaaegade režiimis. Minutid alates südaööst, 0 kuni 1439."
+        },
+        "fall_time_minutes": {
+          "name": "Õhtuse režiimi algus",
+          "description": "Nõutav kindlate kellaaegade režiimis. Minutid alates südaööst, 0 kuni 1439."
+        },
+        "sunrise_offset_minutes": {
+          "name": "Päikesetõusu nihe",
+          "description": "Nõutav päikesetõusu ja -loojangu režiimis. Positiivne väärtus alustab hiljem, negatiivne varem."
+        },
+        "sunset_offset_minutes": {
+          "name": "Päikeseloojangu nihe",
+          "description": "Nõutav päikesetõusu ja -loojangu režiimis. Positiivne väärtus alustab hiljem, negatiivne varem."
+        },
+        "config_entry_id": {
+          "name": "Integratsiooni kirje ID",
+          "description": "Vali skriptist kutsumisel otse integratsiooni kirje."
         }
       }
     },
-    "error": {
-      "invalid_companion_device": "Vali üks kinnitatud Matter/HomeKit seade või jäta Standalone."
+    "set_device_time": {
+      "name": "Seadista seadme aeg",
+      "description": "Seadista lambi kell ja ajavöönd. Puuduvad väärtused võetakse praegusest ajast ja Home Assistanti ajavööndist.",
+      "fields": {
+        "epoch_seconds": {
+          "name": "UTC aeg",
+          "description": "Unixi ajatempel sekundites. Jäta tühjaks, et kasutada praegust aega."
+        },
+        "timezone_offset_seconds": {
+          "name": "Ajavööndi nihe",
+          "description": "Erinevus UTC-st sekundites. Jäta tühjaks, et kasutada Home Assistanti ajavööndit."
+        },
+        "config_entry_id": {
+          "name": "Integratsiooni kirje ID",
+          "description": "Vali skriptist kutsumisel otse integratsiooni kirje."
+        }
+      }
+    },
+    "set_device_location": {
+      "name": "Seadista seadme asukoht",
+      "description": "Salvesta asukoht, mida lamp kasutab päikesetõusu ja -loojangu ajakavas.",
+      "fields": {
+        "latitude": {
+          "name": "Laiuskraad"
+        },
+        "longitude": {
+          "name": "Pikkuskraad"
+        },
+        "config_entry_id": {
+          "name": "Integratsiooni kirje ID",
+          "description": "Vali skriptist kutsumisel otse integratsiooni kirje."
+        }
+      }
+    },
+    "get_motion_capabilities": {
+      "name": "Loe animatsioonide võimalused",
+      "description": "Loe toetatud animatsioonid, nende valikud ning paleti ja salvestusruumi piirangud. Vastus sisaldab seadmeid integratsiooni kirje ID järgi.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Integratsiooni kirje ID",
+          "description": "Vali skriptist kutsumisel otse integratsiooni kirje."
+        }
+      }
     }
   }
 }

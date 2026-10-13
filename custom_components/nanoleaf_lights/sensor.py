@@ -138,10 +138,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up diagnostic sensors from a config entry."""
     coordinator: NanoleafLtpduCoordinator = entry.runtime_data
-    entities: list[NanoleafDiagnosticSensor] = []
+    entities: list[SensorEntity] = []
 
     for description in (*_DEVICE_SENSORS, *_THREAD_SENSORS):
         entities.append(NanoleafDiagnosticSensor(coordinator, description))
+
+    entities.append(NanoleafMotionCapabilitiesSensor(coordinator))
 
     async_add_entities(entities)
 
@@ -165,3 +167,35 @@ class NanoleafDiagnosticSensor(NanoleafLtpduEntity, SensorEntity):  # type: igno
     @property
     def native_value(self) -> Any:  # type: ignore[override]
         return self.entity_description.value_fn(self.coordinator.data or {})
+
+
+class NanoleafMotionCapabilitiesSensor(NanoleafLtpduEntity, SensorEntity):
+    """Report the motions/options supported by this device."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "motion_capabilities"
+    _attr_icon = "mdi:animation-play"
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.config_entry.unique_id}-motion-capabilities"
+
+    @property
+    def native_value(self) -> int | None:
+        capabilities = (self.coordinator.data or {}).get("motion_capabilities")
+        if capabilities is None:
+            return None
+        return len(capabilities.get("motions", []))
+
+    @property
+    def available(self) -> bool:
+        capabilities = (self.coordinator.data or {}).get("capabilities") or {}
+        return (
+            super().available and bool(capabilities.get("motions"))
+            and self.native_value is not None
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return (self.coordinator.data or {}).get("motion_capabilities") or {}

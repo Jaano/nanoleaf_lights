@@ -24,6 +24,7 @@ from .const import (
 )
 from .coordinator import NanoleafLtpduCoordinator
 from .entity import NanoleafLtpduEntity
+from .nl_ltpdu_v3 import color_temperature_range
 from .session import scene_fallback_name, scene_handle_bytes
 
 _LOGGER = logging.getLogger(__name__)
@@ -91,6 +92,22 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
         return self._light.get("color_temp")
 
     @property
+    def _temperature_range(self) -> tuple[int, int]:
+        device = (self.coordinator.data or {}).get("device") or {}
+        return color_temperature_range(
+            device.get("model_number") or self.coordinator.config_entry.data.get("model"),
+            device.get("firmware_version"),
+        )
+
+    @property
+    def min_color_temp_kelvin(self) -> int:
+        return self._temperature_range[0]
+
+    @property
+    def max_color_temp_kelvin(self) -> int:
+        return self._temperature_range[1]
+
+    @property
     def color_mode(self) -> ColorMode:
         return self._color_mode
 
@@ -100,8 +117,10 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
         if not current:
             return None
         handle = scene_handle_bytes(current)
-        return (self.coordinator.data or {}).get("scene_names", {}).get(
-            handle, scene_fallback_name(handle)
+        return (
+            (self.coordinator.data or {})
+            .get("scene_names", {})
+            .get(handle, scene_fallback_name(handle))
         )
 
     @property
@@ -137,13 +156,11 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
 
         ct_kelvin: int | None = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
         if ct_kelvin is not None:
-            ct_kelvin = max(MIN_COLOR_TEMP_KELVIN, min(MAX_COLOR_TEMP_KELVIN, ct_kelvin))
+            ct_kelvin = max(self.min_color_temp_kelvin, min(self.max_color_temp_kelvin, ct_kelvin))
             set_kwargs["color_temp"] = ct_kelvin
             self._color_mode = ColorMode.COLOR_TEMP
 
-        await self.coordinator.async_service_call(
-            lambda s: s.set_light_state(**set_kwargs)
-        )
+        await self.coordinator.async_service_call(lambda s: s.set_light_state(**set_kwargs))
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
@@ -156,8 +173,6 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
         scene_names: dict[bytes, str] = (self.coordinator.data or {}).get("scene_names", {})
         for b, name in scene_names.items():
             if name == effect_name:
-                await self.coordinator.async_service_call(
-                    lambda s, handle=b: s.play_scene(handle)
-                )
+                await self.coordinator.async_service_call(lambda s, handle=b: s.play_scene(handle))
                 return
         _LOGGER.warning("Effect %r not found in scene list", effect_name)

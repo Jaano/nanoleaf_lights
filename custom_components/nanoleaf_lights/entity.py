@@ -16,17 +16,8 @@ class NanoleafLtpduEntity(CoordinatorEntity[NanoleafLtpduCoordinator]):
 
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
-        super().__init__(coordinator)
-
-        if coordinator.companion_device_entry is not None:
-            self.device_entry = coordinator.companion_device_entry
-
     @property
-    def device_info(self) -> DeviceInfo | None:
-        if self.coordinator.companion_device_entry is not None:
-            return None
-
+    def device_info(self) -> DeviceInfo:
         device = (self.coordinator.data or {}).get("device") or {}
         entry = self.coordinator.config_entry
         eui64: str | None = device.get("eui64")
@@ -35,7 +26,7 @@ class NanoleafLtpduEntity(CoordinatorEntity[NanoleafLtpduCoordinator]):
             # Format EUI-64 as colon-separated pairs for display.
             raw = eui64.replace(":", "").lower()
             if len(raw) == 16:
-                connections.add(("eui64", ":".join(raw[i:i+2] for i in range(0, 16, 2))))
+                connections.add(("eui64", ":".join(raw[i : i + 2] for i in range(0, 16, 2))))
         return DeviceInfo(
             identifiers={(DOMAIN, entry.unique_id or entry.entry_id)},
             name=entry.data.get("name", "Nanoleaf light"),

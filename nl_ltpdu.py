@@ -171,6 +171,18 @@ def _create_tlv(tag: int, data: bytes) -> bytes:
 _LOGGER = logging.getLogger(__name__)
 
 
+def _settings_module() -> Any:
+    if __package__:
+        from . import nl_ltpdu_v3
+    else:
+        import nl_ltpdu_v3
+    return nl_ltpdu_v3
+
+
+def _settings_controls() -> Any:
+    return _settings_module().V3Controls
+
+
 def _decode_tlv(buf: bytes) -> tuple[int, int, bytes]:
     """Unpack the first TLV from buf. Returns (tag, length, value).
 
@@ -515,6 +527,7 @@ class LtpduSession:
         self._coap = coap_ctx
         self._cipher = cipher_ctx
         self._model: str | None = model
+        self._firmware_version: str | None = None
         # Serialize all cipher-using operations.
         self._lock: asyncio.Lock = asyncio.Lock()
         # Set True when encrypt() was called but decrypt() was skipped (timeout).
@@ -1121,12 +1134,103 @@ class LtpduSession:
         else:
             hw_ver = fw_ver = serial = eui64 = ""
 
+        self._firmware_version = fw_ver
+        if 0x0B in fields:
+            model = _ascii(fields[0x0B]).strip()
+            if model:
+                self._model = model if model.upper().startswith("NL") else "NL" + model
+
         return {
             "hardware_version": hw_ver,
             "firmware_version": fw_ver,
             "serial_number": serial,
             "eui64": eui64,
+            "model_number": self._model or "",
         }
+
+    async def _request(
+        self,
+        endpoint: str,
+        payload: bytes = b"",
+        method: int = 0,
+        timeout: float = 10.0,
+    ) -> bytes:
+        """Send one legacy operation and return its checked response payload."""
+        if method not in (0, 1):
+            raise ValueError("Legacy operations support GET or POST")
+        path = endpoint.encode("utf-8")
+        request = _create_tlv(1, path) + _create_tlv(2, payload)
+        sender = self.get_ltpdu if method == 0 else self.send_ltpdu
+        response = await sender(request, timeout=timeout)
+        if len(response) < 4:
+            raise RuntimeError(f"{endpoint}: response is truncated")
+        tag, path_length, path_value = _decode_tlv(response)
+        if tag != 1 or path_length != len(path_value) or path_value != path:
+            raise RuntimeError(f"{endpoint}: response endpoint mismatch")
+        offset = 4 + path_length
+        if len(response) < offset + 5:
+            raise RuntimeError(f"{endpoint}: response status is truncated")
+        tag, data_length, status_value = _decode_tlv(response[offset:])
+        if tag != 3 or data_length != len(status_value) or not status_value:
+            raise RuntimeError(f"{endpoint}: invalid response status")
+        if status_value[0] != 0:
+            raise RuntimeError(f"{endpoint} returned status 0x{status_value[0]:02x}")
+        return status_value[1:]
+
+    async def query_capabilities(self, timeout: float = 10.0) -> dict[str, Any]:
+        """Describe the optional features supported by this model and firmware."""
+        return await _settings_controls().query_capabilities(self, timeout=timeout)
+
+    async def query_circadian_settings(self, timeout: float = 10.0) -> dict[str, Any]:
+        """Read circadian configuration and its enabled state."""
+        return await _settings_controls().query_circadian_settings(self, timeout=timeout)
+
+    async def set_circadian_config(
+        self, config: dict[str, Any], timeout: float = 10.0
+    ) -> None:
+        """Write the complete circadian configuration."""
+        await _settings_controls().set_circadian_config(self, config, timeout=timeout)
+
+    async def set_circadian_enabled(self, enabled: bool, timeout: float = 10.0) -> None:
+        """Enable or disable circadian lighting."""
+        await _settings_controls().set_circadian_enabled(self, enabled, timeout=timeout)
+
+    async def query_device_time(self, timeout: float = 10.0) -> dict[str, Any]:
+        """Read the device's clock and UTC offset."""
+        return await _settings_controls().query_device_time(self, timeout=timeout)
+
+    async def set_device_time(
+        self,
+        epoch_seconds: int,
+        timezone_offset_seconds: int | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        """Set the device's clock and optionally its UTC offset."""
+        await _settings_controls().set_device_time(
+            self, epoch_seconds, timezone_offset_seconds, timeout=timeout
+        )
+
+    async def query_device_location(self, timeout: float = 10.0) -> dict[str, Any]:
+        """Read the location used for sunrise and sunset calculations."""
+        return await _settings_controls().query_device_location(self, timeout=timeout)
+
+    async def set_device_location(
+        self, latitude: float, longitude: float, timeout: float = 10.0
+    ) -> None:
+        """Set the device's latitude and longitude."""
+        await _settings_controls().set_device_location(self, latitude, longitude, timeout=timeout)
+
+    async def query_power_loss_recovery(self, timeout: float = 10.0) -> bool:
+        """Read whether the light restores its previous state after power loss."""
+        return await _settings_controls().query_power_loss_recovery(self, timeout=timeout)
+
+    async def set_power_loss_recovery(self, enabled: bool, timeout: float = 10.0) -> None:
+        """Set whether the light restores its previous state after power loss."""
+        await _settings_controls().set_power_loss_recovery(self, enabled, timeout=timeout)
+
+    async def query_motion_capabilities(self, timeout: float = 10.0) -> dict[str, Any]:
+        """Read the device's supported scene motions and palette limits."""
+        return await _settings_controls().query_motion_capabilities(self, timeout=timeout)
 
     async def query_light_state(self, timeout: float = 10.0) -> dict[str, Any]:
         """Batch-read current light state from five lb endpoints.
@@ -1309,15 +1413,20 @@ class LtpduSession:
         """Set color temperature.
 
         Args:
-            kelvin:  Color temperature in Kelvin (1200-6500).
+            kelvin:  Color temperature in Kelvin, within this model's supported range.
             timeout: Per-request timeout in seconds.
 
         Raises:
             ValueError if kelvin is out of range.
             RuntimeError on CoAP error, timeout, or non-zero device status.
         """
-        if not 1200 <= kelvin <= 6500:
-            raise ValueError(f"color temperature must be 1200-6500 K, got {kelvin}")
+        minimum, maximum = _settings_module().color_temperature_range(
+            self._model, self._firmware_version
+        )
+        if not minimum <= kelvin <= maximum:
+            raise ValueError(
+                f"color temperature must be {minimum}-{maximum} K, got {kelvin}"
+            )
         # lb/0/ct write is 2-byte uint16 even though the device returns 4 bytes on read.
         value = kelvin.to_bytes(2, "big")
         req = _create_tlv(0x0001, b"lb/0/ct") + _create_tlv(0x0002, value)
@@ -1344,7 +1453,7 @@ class LtpduSession:
             brightness:  0-100.  Omit to leave unchanged.
             hue:         0-360.  Omit to leave unchanged.
             saturation:  0-100.  Omit to leave unchanged.
-            color_temp:  1200-6500 K.  Omit to leave unchanged.
+            color_temp:  Kelvin within this model's supported range. Omit to leave unchanged.
             timeout:     Per-request timeout in seconds.
 
         Raises:
@@ -1380,8 +1489,11 @@ class LtpduSession:
                 _create_tlv(0x0002, saturation.to_bytes(2, "big")),
             ]
         if color_temp is not None:
-            if not 1200 <= color_temp <= 6500:
-                raise ValueError(f"color_temp must be 1200-6500 K, got {color_temp}")
+            minimum, maximum = _settings_module().color_temperature_range(
+                self._model, self._firmware_version
+            )
+            if not minimum <= color_temp <= maximum:
+                raise ValueError(f"color_temp must be {minimum}-{maximum} K, got {color_temp}")
             parts += [
                 _create_tlv(0x0001, b"lb/0/ct"),
                 _create_tlv(0x0002, color_temp.to_bytes(2, "big")),  # write=2B, read=4B

@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "probatio", "PyYAML"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

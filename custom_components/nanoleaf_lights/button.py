@@ -23,6 +23,7 @@ async def async_setup_entry(
     async_add_entities([
         NanoleafIdentifyButton(coordinator),
         NanoleafRefreshScenesButton(coordinator),
+        NanoleafSyncClockLocationButton(coordinator),
     ])
 
 
@@ -61,3 +62,30 @@ class NanoleafRefreshScenesButton(NanoleafLtpduEntity, ButtonEntity):  # type: i
         api = NanoleafCloudApi()
         await self.hass.async_add_executor_job(api.build_scenes, scenes_path)
         await self.coordinator.async_reload_scenes()
+
+
+class NanoleafSyncClockLocationButton(NanoleafLtpduEntity, ButtonEntity):
+    """Copy the configured HA clock, timezone and location to the bulb."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_translation_key = "sync_clock_location"
+    _attr_icon = "mdi:map-clock"
+
+    def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.config_entry.unique_id}-sync-clock-location"
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        capabilities = data.get("capabilities") or {}
+        return (
+            super().available
+            and bool(capabilities.get("circadian"))
+            and (data.get("circadian") or {}).get("enabled") is not None
+            and bool(capabilities.get("time"))
+            and bool(capabilities.get("location"))
+        )
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_sync_clock_and_location()

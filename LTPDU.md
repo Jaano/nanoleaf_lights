@@ -305,7 +305,8 @@ NL45 uses a fixed flat layout: 10 B hw + 8 B fw (ASCII) + 11 B serial + 8 B EUI-
 | `0x0201` | LTPDU access token (used during firmware update) |
 | `0x0202` | Read EUI-64 |
 | `0x0801` | Device control R/W wrapper |
-| `0x0902` | Unknown |
+| `0x0901` | Set legacy Power Loss Recovery (`ci` command) |
+| `0x0902` | Read legacy Power Loss Recovery (`ci` command) |
 
 ### `0x0801` Device Control Sub-endpoints
 
@@ -319,7 +320,41 @@ TAG  L0   RW  TAG  L1   EP      TAG  L2   DATA
 | Endpoint | Type | Notes |
 |---|---|---|
 | `ac` | tlv8 | Circadian Lighting |
-| `lglt` | 8 bytes | Circadian Lighting |
+| `lglt` | 8 bytes | Longitude then latitude, signed int32 millidegrees |
 | `tm` | 8-byte uint | Current time (seconds since epoch) |
 | `tz` | 8-byte int | Timezone offset in seconds |
-| `ac/en` | ? | Unknown |
+| `ac/en` | uint8 | Circadian enabled flag on older firmware |
+
+## Circadian, clock, recovery, and motion settings
+
+The settings API is shared by the legacy and v3 sessions. Both transports send checked endpoint operations; each retains its existing handshake and framing.
+
+| Endpoint | Operation / payload |
+|---|---|
+| `ac` | GET/POST complete circadian configuration |
+| `ac/en` | GET/POST boolean circadian enable on older firmware |
+| `lb/0/ac/en` | GET/POST boolean circadian enable on effectV2 firmware |
+| `tm` | GET/POST unsigned uint64 big-endian Unix epoch seconds |
+| `tz` | GET/POST signed int64 big-endian UTC offset seconds |
+| `lglt` | GET/POST signed int32 longitude then latitude, each in millidegrees |
+| `lb/0/plr` | GET/POST effectV2 recovery: first byte 2 enabled, 1 disabled; writes add a zero byte |
+| `ci` command `0x0902` / `0x0901` | Legacy recovery read / write, boolean payload |
+| `effect/motions` | GET effectV2 motion IDs; tag 10 contains big-endian uint32 IDs |
+| `ci` command `0x0107` | Query plugin UUIDs on supported older scene implementations |
+
+Circadian configuration uses **8-bit tags and 8-bit lengths**, unlike the 16-bit lengths of device/effect fields. HomeKit models use a bare mode TLV; other supported models prepend version tag 1 with value 0. Mode tag 2 selects sunrise/sunset and mode tag 3 selects explicit times. Its nested tags are:
+
+| Tag | Meaning | Encoding |
+|---|---|---|
+| 1 | Rise time or sunrise offset | uint16 minutes after midnight, or signed int16 offset |
+| 2 | Fall time or sunset offset | uint16 minutes after midnight, or signed int16 offset |
+| 3 / 4 / 5 | Rise / fall / morning ramp | uint16 minutes |
+| 6 / 7 / 8 | Daylight / evening / morning white point | uint16 mireds |
+
+All multibyte values are big-endian. White points convert from Kelvin using rounded `1,000,000 / K` and read back as integer Kelvin; conversion may slightly change the reported value. A configuration requires every white point and ramp plus both timing fields for its mode. Readback accepts versioned, bare, and status-prefixed configurations. An unset configuration is returned as `None`.
+
+Circadian payload status 2 means missing clock/timezone/location information, 3 rejects values, and 5 reports a read failure. Enabling Auto Circadian Lighting powers the light on only after successful enablement. The HA sunrise/sunset configuration action and Auto Circadian Lighting enable control synchronize Home Assistant's clock, offset, and location before writing.
+
+Capability checks use model and firmware metadata. Older Essentials motion lists can come from a fixed model profile; results identify `motion_source` as `profile` or `device`. Unknown device-reported motion IDs are retained with empty parameter metadata. Known animations include parameter types, ranges, choices, and defaults. These queries do not create scenes or play animations.
+
+NL67 firmware 5.0.0 and newer uses 2100–6500 K. Recognized older Essentials models use 2127–6535 K; unknown models retain the conservative 2700–6500 K range.

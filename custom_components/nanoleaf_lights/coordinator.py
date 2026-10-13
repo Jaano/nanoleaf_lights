@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -26,12 +29,60 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .nl_ltpdu import AuthRejectedError, SceneLookup, SessionExpiredError
+from .nl_ltpdu_v3 import device_capabilities
 from .session import connect_session, scene_fallback_name, scene_handle_bytes
 
 if TYPE_CHECKING:
     from .session import Session
 
 _LOGGER = logging.getLogger(__name__)
+_SETTINGS_INTERVAL = 60.0
+_CIRCADIAN_FIELDS = {
+    "daylight_target_kelvin": "daylightTargetK",
+    "evening_target_kelvin": "eveningTargetK",
+    "morning_target_kelvin": "morningTargetK",
+    "rise_ramp_minutes": "riseRampMinutes",
+    "fall_ramp_minutes": "fallRampMinutes",
+    "morning_ramp_minutes": "morningRampMinutes",
+    "rise_time_minutes": "riseTimeOfDayMinutes",
+    "fall_time_minutes": "fallTimeOfDayMinutes",
+    "sunrise_offset_minutes": "sunriseOffsetMinutes",
+    "sunset_offset_minutes": "sunsetOffsetMinutes",
+}
+
+
+def _circadian_config(config: dict[str, Any], *, to_device: bool) -> dict[str, Any]:
+    """Translate the action schema and protocol representation without defaults."""
+    if not to_device:
+        config = {key: value for key, value in config.items() if key != "version"}
+    fields = _CIRCADIAN_FIELDS if to_device else {v: k for k, v in _CIRCADIAN_FIELDS.items()}
+    modes = {"explicit": "explicit", "sunrise_sunset": "sunriseSunset"}
+    if not to_device:
+        modes = {v: k for k, v in modes.items()}
+    mode = config.get("mode")
+    if mode not in modes or set(config) - (set(fields) | {"mode"}):
+        raise HomeAssistantError("Invalid circadian configuration fields or mode")
+    if to_device:
+        common = set(_CIRCADIAN_FIELDS) - {
+            "rise_time_minutes",
+            "fall_time_minutes",
+            "sunrise_offset_minutes",
+            "sunset_offset_minutes",
+        }
+        timing = (
+            {"rise_time_minutes", "fall_time_minutes"}
+            if mode == "explicit"
+            else {"sunrise_offset_minutes", "sunset_offset_minutes"}
+        )
+        if set(config) != common | timing | {"mode"}:
+            raise HomeAssistantError(
+                "Supply all white points and ramps, and only the timing fields "
+                "for the selected mode"
+            )
+    return {
+        "mode": modes[mode],
+        **{fields[key]: value for key, value in config.items() if key != "mode"},
+    }
 
 
 class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -55,7 +106,6 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.config_entry = entry
         self._session: Session | None = None
-        self.companion_device_entry: Any | None = None
         self.connected: bool = False
         self._consecutive_auth_failures: int = 0
         self._AUTH_FAILURE_THRESHOLD = 3
@@ -63,6 +113,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             Path(hass.config.config_dir) / ".storage" / STORAGE_DIR / SCENES_FILENAME
         )
         self._scene_lookup: SceneLookup | None = None
+        self._settings_updated_at = 0.0
 
     # ------------------------------------------------------------------
     # Session helpers
@@ -138,11 +189,57 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 scene_names[b] = scene_fallback_name(b)
 
         # Merge into current data (may still be None on first run).
-        existing = self.data or {}
+        existing = dict(self.data or {})
+        existing.pop("motion_capabilities", None)
         self.async_set_updated_data(
-            {**existing, "device": device, "thread": thread,
-             "scene_handles": scene_handles, "scene_names": scene_names}
+            {
+                **existing,
+                "device": device,
+                "thread": thread,
+                "scene_handles": scene_handles,
+                "scene_names": scene_names,
+                "capabilities": device_capabilities(
+                    device.get("model_number") or self.config_entry.data.get(CONF_MODEL),
+                    device.get("firmware_version"),
+                ),
+            }
         )
+
+    async def _refresh_settings(self, groups: set[str] | None = None) -> None:
+        """Read supported settings without making unavailable options look disabled."""
+        assert self._session is not None
+        values = dict(self.data or {})
+        capabilities = values.get("capabilities", {})
+        queries = {
+            "circadian": ("circadian", "query_circadian_settings"),
+            "clock": ("time", "query_device_time"),
+            "location": ("location", "query_device_location"),
+            "power_loss_recovery": ("power_loss_recovery", "query_power_loss_recovery"),
+            "motion_capabilities": ("motions", "query_motion_capabilities"),
+        }
+        for key, (feature, method) in queries.items():
+            if groups is not None and key not in groups:
+                continue
+            values[key] = None
+            if not capabilities.get(feature):
+                continue
+            try:
+                value = await getattr(self._session, method)(timeout=10.0)
+                if key == "circadian" and value.get("config") is not None:
+                    value = {**value, "config": _circadian_config(value["config"], to_device=False)}
+                values[key] = value
+            except SessionExpiredError, TimeoutError, OSError:
+                # Stop after transport failure; a fresh session will retry these reads.
+                self.async_set_updated_data(values)
+                raise
+            except Exception as exc:
+                if getattr(self._session, "_cipher_corrupted", False) or getattr(
+                    self._session, "_broken", False
+                ):
+                    self.async_set_updated_data(values)
+                    raise ConnectionError("Settings exchange invalidated the session") from exc
+                _LOGGER.debug("Could not read %s: %s", key, exc)
+        self.async_set_updated_data(values)
 
     # ------------------------------------------------------------------
     # Poll loop
@@ -172,8 +269,6 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Populate static data right after a fresh connection.
             await self._refresh_static_data()
 
-        existing = self.data or {}
-
         async def _query() -> tuple[dict[str, Any], bytes]:
             assert self._session is not None
             light = await self._session.query_light_state(timeout=10.0)
@@ -196,6 +291,19 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._safe_close()
             raise UpdateFailed(f"Connection lost: {exc}") from exc
 
+        if monotonic() - self._settings_updated_at >= _SETTINGS_INTERVAL:
+            groups = {"circadian", "clock", "location", "power_loss_recovery"}
+            if not self._settings_updated_at or "motion_capabilities" not in (self.data or {}):
+                groups.add("motion_capabilities")
+            try:
+                await self._refresh_settings(groups)
+            except (SessionExpiredError, TimeoutError, OSError) as exc:
+                _LOGGER.debug("Settings connection failed: %s", exc)
+                await self._safe_close()
+                # Keep the successful light state and reconnect on the next poll.
+                # Back off optional reads so a silent endpoint cannot starve controls.
+            self._settings_updated_at = monotonic()
+        existing = self.data or {}
         return {
             **existing,
             "light": light,
@@ -234,6 +342,131 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as exc:
             await self._safe_close()
             raise HomeAssistantError(f"Command failed: {exc}") from exc
+
+    def _require_feature(self, feature: str) -> None:
+        if not (self.data or {}).get("capabilities", {}).get(feature):
+            raise HomeAssistantError(f"This device does not support {feature}")
+
+    async def _settings_call(
+        self, action: Callable[[Session], Coroutine[Any, Any, None]], groups: set[str]
+    ) -> None:
+        """Write settings, then read the device's accepted values back."""
+
+        async def update(session: Session) -> None:
+            await action(session)
+            await self._refresh_settings(groups)
+
+        await self.async_service_call(update)
+        await self.async_request_refresh()
+
+    def _clock_values(
+        self, epoch_seconds: int | None, timezone_offset_seconds: int | None
+    ) -> tuple[int, int]:
+        epoch = int(datetime.now(UTC).timestamp()) if epoch_seconds is None else epoch_seconds
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or not 0 <= epoch <= (1 << 64) - 1:
+            raise HomeAssistantError("epoch_seconds must be a nonnegative integer")
+        if timezone_offset_seconds is None:
+            try:
+                moment = datetime.fromtimestamp(epoch, ZoneInfo(self.hass.config.time_zone))
+                offset = moment.utcoffset()
+            except (ValueError, OverflowError, OSError) as exc:
+                raise HomeAssistantError(
+                    "Cannot determine timezone offset for this timestamp"
+                ) from exc
+            assert offset is not None
+            timezone_offset_seconds = int(offset.total_seconds())
+        if (
+            isinstance(timezone_offset_seconds, bool)
+            or not isinstance(timezone_offset_seconds, int)
+            or not -86400 <= timezone_offset_seconds <= 86400
+        ):
+            raise HomeAssistantError("timezone_offset_seconds must be an integer within one day")
+        return epoch, timezone_offset_seconds
+
+    async def async_set_circadian_enabled(self, enabled: bool) -> None:
+        self._require_feature("circadian")
+        groups = {"circadian"}
+        if enabled:
+            epoch, offset = self._clock_values(None, None)
+            self._require_feature("time")
+            self._require_feature("location")
+            groups |= {"clock", "location"}
+
+        async def update(session: Session) -> None:
+            if enabled:
+                await session.set_device_time(epoch, offset)
+                await session.set_device_location(
+                    self.hass.config.latitude, self.hass.config.longitude
+                )
+            await session.set_circadian_enabled(enabled)
+
+        await self._settings_call(update, groups)
+
+    async def async_set_circadian_config(self, config: dict[str, Any]) -> None:
+        self._require_feature("circadian")
+        wire_config = _circadian_config(config, to_device=True)
+        groups = {"circadian"}
+        solar = config["mode"] == "sunrise_sunset"
+        if solar:
+            self._require_feature("time")
+            self._require_feature("location")
+            epoch, offset = self._clock_values(None, None)
+            groups |= {"clock", "location"}
+
+        async def update(session: Session) -> None:
+            if solar:
+                await session.set_device_time(epoch, offset)
+                await session.set_device_location(
+                    self.hass.config.latitude, self.hass.config.longitude
+                )
+            await session.set_circadian_config(wire_config)
+
+        await self._settings_call(update, groups)
+
+    async def async_set_device_time(
+        self, epoch_seconds: int | None = None, timezone_offset_seconds: int | None = None
+    ) -> None:
+        self._require_feature("time")
+        epoch, offset = self._clock_values(epoch_seconds, timezone_offset_seconds)
+        await self._settings_call(lambda session: session.set_device_time(epoch, offset), {"clock"})
+
+    async def async_set_device_location(self, latitude: float, longitude: float) -> None:
+        self._require_feature("location")
+        await self._settings_call(
+            lambda session: session.set_device_location(latitude, longitude), {"location"}
+        )
+
+    async def async_sync_clock_and_location(self) -> None:
+        self._require_feature("circadian")
+        if ((self.data or {}).get("circadian") or {}).get("enabled") is None:
+            raise HomeAssistantError("Auto Circadian Lighting is unavailable")
+        self._require_feature("time")
+        self._require_feature("location")
+        epoch, offset = self._clock_values(None, None)
+
+        async def update(session: Session) -> None:
+            await session.set_device_time(epoch, offset)
+            await session.set_device_location(self.hass.config.latitude, self.hass.config.longitude)
+
+        await self._settings_call(update, {"clock", "location"})
+
+    async def async_set_power_loss_recovery(self, enabled: bool) -> None:
+        self._require_feature("power_loss_recovery")
+        await self._settings_call(
+            lambda session: session.set_power_loss_recovery(enabled), {"power_loss_recovery"}
+        )
+
+    async def async_get_motion_capabilities(self) -> dict[str, Any]:
+        self._require_feature("motions")
+        result: dict[str, Any] = {}
+
+        async def query(session: Session) -> None:
+            nonlocal result
+            result = await session.query_motion_capabilities()
+
+        await self.async_service_call(query)
+        self.async_set_updated_data({**(self.data or {}), "motion_capabilities": result})
+        return result
 
     async def async_reload_scenes(self) -> None:
         """Reload the scene lookup after scenes.json has been updated."""

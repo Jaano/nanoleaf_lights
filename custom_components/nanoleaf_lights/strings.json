@@ -69,21 +69,122 @@
       "reconfigure_successful": "Connection settings updated successfully."
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Device page",
-        "description": "Enhanced Nanoleaf entities automatically appear on the matching Matter/HomeKit device page when exactly one native Nanoleaf device has the same serial number: {serial}.",
-        "data": {
-          "companion_device_id": "Device page"
+  "entity": {
+    "switch": {
+      "circadian": {
+        "name": "Auto Circadian Lighting"
+      },
+      "power_loss_recovery": {
+        "name": "Power Loss Recovery"
+      }
+    },
+    "button": {
+      "sync_clock_location": {
+        "name": "Sync Circadian clock and location"
+      }
+    },
+    "sensor": {
+      "motion_capabilities": {
+        "name": "Motion capabilities"
+      }
+    }
+  },
+  "selector": {
+    "circadian_mode": {
+      "options": {
+        "explicit": "Fixed clock times",
+        "sunrise_sunset": "Sunrise and sunset"
+      }
+    }
+  },
+  "services": {
+    "set_circadian_config": {
+      "name": "Configure circadian lighting",
+      "description": "Store a complete white-point schedule on the bulb. Sunrise/sunset mode also copies Home Assistant's clock, timezone and location to the bulb.",
+      "fields": {
+        "mode": {
+          "name": "Schedule mode"
         },
-        "data_description": {
-          "companion_device_id": "Select Automatic to match by serial number, Standalone to keep a separate Enhanced Nanoleaf device, or a specific Matter/HomeKit device page."
+        "daylight_target_kelvin": {
+          "name": "Daytime white point"
+        },
+        "evening_target_kelvin": {
+          "name": "Evening white point"
+        },
+        "morning_target_kelvin": {
+          "name": "Morning white point"
+        },
+        "rise_ramp_minutes": {
+          "name": "Daytime ramp duration"
+        },
+        "fall_ramp_minutes": {
+          "name": "Evening ramp duration"
+        },
+        "morning_ramp_minutes": {
+          "name": "Morning ramp duration"
+        },
+        "rise_time_minutes": {
+          "name": "Daytime start",
+          "description": "Required for explicit mode; minutes after midnight, from 0 to 1439."
+        },
+        "fall_time_minutes": {
+          "name": "Evening start",
+          "description": "Required for explicit mode; minutes after midnight, from 0 to 1439."
+        },
+        "sunrise_offset_minutes": {
+          "name": "Sunrise offset",
+          "description": "Required for sunrise/sunset mode. Positive values start later; negative values start earlier."
+        },
+        "sunset_offset_minutes": {
+          "name": "Sunset offset",
+          "description": "Required for sunrise/sunset mode. Positive values start later; negative values start earlier."
+        },
+        "config_entry_id": {
+          "name": "Integration entry ID",
+          "description": "Select the integration entry directly when calling from a script."
         }
       }
     },
-    "error": {
-      "invalid_companion_device": "Select one of the verified Matter/HomeKit devices, or keep Standalone."
+    "set_device_time": {
+      "name": "Set device time",
+      "description": "Set the bulb's clock and timezone. Omitted values use the current time and Home Assistant's configured timezone.",
+      "fields": {
+        "epoch_seconds": {
+          "name": "UTC time",
+          "description": "Unix epoch seconds. Leave empty to use the current time."
+        },
+        "timezone_offset_seconds": {
+          "name": "Timezone offset",
+          "description": "Offset from UTC in seconds. Leave empty to use Home Assistant's configured timezone."
+        },
+        "config_entry_id": {
+          "name": "Integration entry ID"
+        }
+      }
+    },
+    "set_device_location": {
+      "name": "Set device location",
+      "description": "Store the location used by the bulb's sunrise/sunset schedule.",
+      "fields": {
+        "latitude": {
+          "name": "Latitude"
+        },
+        "longitude": {
+          "name": "Longitude"
+        },
+        "config_entry_id": {
+          "name": "Integration entry ID"
+        }
+      }
+    },
+    "get_motion_capabilities": {
+      "name": "Get motion capabilities",
+      "description": "Read supported scene motions, their options, and palette/storage limits. Returns devices keyed by integration entry ID.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Integration entry ID"
+        }
+      }
     }
   }
 }

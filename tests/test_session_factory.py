@@ -73,6 +73,9 @@ def factory(monkeypatch):
     legacy.LtpduSession = backend("legacy")
     modern = types.ModuleType(f"{package_name}.nl_ltpdu_v3")
     modern.LtpduV3Session = backend("v3")
+    from nl_ltpdu_v3 import color_temperature_range, device_capabilities
+    modern.color_temperature_range = color_temperature_range
+    modern.device_capabilities = device_capabilities
     monkeypatch.setitem(sys.modules, legacy.__name__, legacy)
     monkeypatch.setitem(sys.modules, modern.__name__, modern)
     spec = importlib.util.spec_from_file_location(
@@ -229,7 +232,6 @@ def ha_modules(factory, monkeypatch):
         "homeassistant.config_entries",
         ConfigEntry=object,
         ConfigFlow=ConfigFlow,
-        OptionsFlowWithReload=ConfigFlow,
     )
     register("homeassistant.core", HomeAssistant=object, callback=lambda method: method)
     register(
@@ -306,6 +308,7 @@ async def test_coordinator_keeps_opaque_ids_and_prefers_device_names(ha_modules)
         resolve=lambda palette: ("Cloud palette name", "id")
     )
     coordinator.data = None
+    coordinator.config_entry = SimpleNamespace(data={"model": "NL67"})
     coordinator.async_set_updated_data = lambda data: setattr(coordinator, "data", data)
     await coordinator._refresh_static_data()
     assert requested == [b"\x11", b"\x00\x00\x00\x11"]
