@@ -116,15 +116,13 @@ TLV1(0x01, metadata_bytes)
 TLV1(0x02, palette_bytes)
 ```
 
-Source: `NanoleafEffect.toSimpleSceneTLV()` (write) and `buildFromSimpleSceneTLV()` (read).
-
 ### Metadata bytes
 
 ```text
 [sceneId(1B), effectType(1B), ...effect-type-specific params]
 ```
 
-`sceneId` valid range: **1-254** (`SIMPLE_SCENE_VALID_ID_RANGE`).
+`sceneId` valid range: **1-254**.
 Built-in scenes occupy 244-254; user-created scenes use 1-243.
 
 Effect type byte values and their motion parameters:
@@ -166,27 +164,6 @@ expanded palette length.
 
 ---
 
-## Source locations (jadx_out_11.9.2)
-
-All paths relative to `reverse/android/jadx_out_11.9.2/sources/`.
-
-| File | What it contains |
-|------|-----------------|
-| `me/nanoleaf/nanoleaf/nanoleafclient/UrlProvider.java` | Base URLs |
-| `p920zg/InterfaceC29815c.java` | `EffectsApiService` Retrofit interface (all endpoints) |
-| `me/nanoleaf/nanoleaf/nanoleafclient/requestmodels/DiscoverSearchRequest.java` | Request model + enums |
-| `me/nanoleaf/nanoleaf/nanoleafclient/requestmodels/DiscoverSearchRequestSerializer.java` | Gson serializer (exact JSON field names) |
-| `me/nanoleaf/nanoleaf/repository/DiscoverRepositoryImpl.java` | Business logic, paging, caching |
-| `me/nanoleaf/nanoleaf/feature/accessory_control/base/scene/discover/DiscoverFilterRadioItem.java` | Featured / Community enum |
-| `me/nanoleaf/nanoleaf/Constants.java` | Built-in scene ID -> name maps |
-| `me/nanoleaf/nanoleaf/models/effect_manager_v2/NanoleafEffect.java` | `buildFromAnimationJson`, `buildFromSimpleSceneTLV`, name resolution |
-| `me/nanoleaf/nanoleaf/communication/hardware/commands/animations/GetAllAnimationsRequest.java` | `requestAll` command wrapper |
-| `me/nanoleaf/nanoleaf/communication/hardware/response/GetAllAnimationsResponseBody.java` | Response wrapper (`animations` array) |
-| `me/nanoleaf/nanoleaf/models/dto/AccessoryAnimationDTO.java` | Per-animation DTO (includes `animName`) |
-| `me/nanoleaf/nanoleaf/homekitclient/networking/command_centre/CommandCentreRepository.java` | Orchestrates `requestAll`, persists effects |
-
----
-
 ## How the app resolves scene names already on a device
 
 ### Path 1  -  User / downloaded scenes (Wi-Fi and Matter devices)
@@ -214,38 +191,21 @@ The device replies with a JSON object:
 }
 ```
 
-The `animName` field is the display name exactly as stored on the device. The app takes it
-The app takes it verbatim — no lookup table is involved. Each animation is parsed into a `NanoleafEffect`
-via `NanoleafEffect.Companion.buildFromAnimationJson()` and the name is set directly from
-`animName`.
+The `animName` field is the display name exactly as stored on the device.
+It is used verbatim, without a lookup table.
 
 There is no stable numeric ID in this path. The app derives a 32-bit ID by
 hashing `animName` (Java `hashCode()` masked to 32 bits) and uses it internally.
 
 ### Path 2  -  Built-in scenes on Matter/Thread (HomeKit) devices
 
-Devices that expose scenes via TLV (HomeKit characteristic) use a different path:
-`buildFromSimpleSceneTLV()`. The TLV payload carries only a **numeric scene ID** (e.g. 251)
-and color/motion data  -  no name string.
-
-The app resolves the name by looking up the ID in one of the three hardcoded maps from
-`Constants.java`, selected by device type:
-
-```java
-String name = (sourceAccessoryType != Accessory.TYPE.SECRETLABS_LIGHT_STRIPS)
-    ? Constants.f59057A.get(id)           // secretlab map
-    : AccessoryUtilsKt.isUmbra(type)
-        ? Constants.f59084z.get(id)       // umbra map
-        : Constants.f59083y.get(id);      // essentials map
-// fallback if not found:
-if (name == null) name = "Effect " + id;
-```
-
-The maps are the same ones documented in the "Built-in scenes" tables above.
+The TLV payload carries a numeric scene ID (e.g. 251) and color/motion data,
+without a name string. Built-in names are selected from device-specific maps
+using the numeric scene ID. If no name is found, the fallback is `Effect <id>`.
 
 ### Summary
 
 | Source                              | Name origin                                               | ID origin               |
 |-------------------------------------|-----------------------------------------------------------|-------------------------|
 | `requestAll` JSON (Wi-Fi/standard)  | `animName` field from device                              | hash of `animName`      |
-| TLV characteristic (Matter/HomeKit) | Hardcoded map in `Constants.java` keyed by numeric scene ID | numeric scene ID from TLV |
+| TLV characteristic (Matter/HomeKit) | Device-specific map keyed by numeric scene ID | numeric scene ID from TLV |

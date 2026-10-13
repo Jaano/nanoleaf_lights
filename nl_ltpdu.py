@@ -566,70 +566,74 @@ class LtpduSession:
 
         # POST our public key to /nlsecure
         coap_ctx = await aiocoap.Context.create_client_context()
-        uri = _coap_uri(ip_address, port, "/nlsecure")
-        payload = _create_tlv(0x0101, our_pk_bytes)
-        request = aiocoap.Message(code=aiocoap.POST, payload=payload, uri=uri)
-
+        owns_context = True
         try:
-            response = await asyncio.wait_for(
-                coap_ctx.request(request).response, timeout=timeout
-            )
-        except (TimeoutError, asyncio.TimeoutError) as e:
-            await coap_ctx.shutdown()
-            raise RuntimeError(f"KEX timed out after {timeout}s") from e
+            uri = _coap_uri(ip_address, port, "/nlsecure")
+            payload = _create_tlv(0x0101, our_pk_bytes)
+            request = aiocoap.Message(code=aiocoap.POST, payload=payload, uri=uri)
 
-        if not response.code.is_successful():
-            await coap_ctx.shutdown()
-            raise RuntimeError(f"KEX POST returned {response.code}")
-
-        # Extract device public key; detect plaintext error first.
-        # The device can return a plaintext TLV 0x01F1 error (e.g. status 0x08
-        # when it's busy or a session is being closed).  The PCAP shows the
-        # desktop app retries the exact same KEX immediately and it succeeds.
-        raw_kex = response.payload
-        if len(raw_kex) >= 4 and struct.unpack_from("!H", raw_kex)[0] == 0x01F1:
-            _, _, err_status = _decode_tlv(raw_kex)
-            if retries > 0:
-                await coap_ctx.shutdown()
-                return await cls.kex(
-                    ip_address, port, timeout=timeout, retries=retries - 1, model=model
+            try:
+                response = await asyncio.wait_for(
+                    coap_ctx.request(request).response, timeout=timeout
                 )
-            await coap_ctx.shutdown()
-            _LOGGER.debug("KEX rejected: raw_kex=%s", raw_kex.hex())
-            raise RuntimeError(f"KEX rejected by device — status 0x{err_status.hex()}")
+            except (TimeoutError, asyncio.TimeoutError) as e:
+                raise RuntimeError(f"KEX timed out after {timeout}s") from e
 
-        _, _, dev_pk_bytes = _decode_tlv(raw_kex)
-        dev_pk = X25519PublicKey.from_public_bytes(dev_pk_bytes)
-        shared_secret = our_sk.exchange(dev_pk)
+            if not response.code.is_successful():
+                raise RuntimeError(f"KEX POST returned {response.code}")
 
-        # Derive AES key and IV from shared secret.
-        if model and model.upper() in _LEGACY_MODELS:
-            key_label = b"AES-NL-OPENAPI-KEY"
-            iv_label = b"AES-NL-OPENAPI-IV"
-        else:
-            key_label = bytes.fromhex(
-                "bca9e39738e2611c25d243c985d3c592ccbee330e077b89d7978f5fc785cb5e8"
+            # Extract device public key; detect plaintext error first.
+            # The device can return a plaintext TLV 0x01F1 error (e.g. status 0x08
+            # when it's busy or a session is being closed). Retry this rejection.
+            raw_kex = response.payload
+            if len(raw_kex) >= 4 and struct.unpack_from("!H", raw_kex)[0] == 0x01F1:
+                _, _, err_status = _decode_tlv(raw_kex)
+                if retries > 0:
+                    await coap_ctx.shutdown()
+                    owns_context = False
+                    return await cls.kex(
+                        ip_address, port, timeout=timeout, retries=retries - 1, model=model
+                    )
+                _LOGGER.debug("KEX rejected: raw_kex=%s", raw_kex.hex())
+                raise RuntimeError(f"KEX rejected by device — status 0x{err_status.hex()}")
+
+            _, _, dev_pk_bytes = _decode_tlv(raw_kex)
+            dev_pk = X25519PublicKey.from_public_bytes(dev_pk_bytes)
+            shared_secret = our_sk.exchange(dev_pk)
+
+            # Derive AES key and IV from shared secret.
+            if model and model.upper() in _LEGACY_MODELS:
+                key_label = b"AES-NL-OPENAPI-KEY"
+                iv_label = b"AES-NL-OPENAPI-IV"
+            else:
+                key_label = bytes.fromhex(
+                    "bca9e39738e2611c25d243c985d3c592ccbee330e077b89d7978f5fc785cb5e8"
+                )
+                iv_label = bytes.fromhex(
+                    "41e2e9eb5e5fa56e800e346d8c2b600742eb49839626faecdc37fb94a3a3c202"
+                )
+
+            def _sha1_derive(label: bytes) -> bytes:
+                d = hashes.Hash(hashes.SHA1())  # noqa: S303 — protocol-mandated
+                d.update(label + shared_secret)
+                return d.finalize()[:16]
+
+            aes_key = _sha1_derive(key_label)
+            aes_iv = _sha1_derive(iv_label)
+
+            # Single shared AES-128-CTR cipher context (encrypt == decrypt)
+            cipher = ciphers.Cipher(
+                ciphers.algorithms.AES(aes_key),
+                ciphers.modes.CTR(aes_iv),
             )
-            iv_label = bytes.fromhex(
-                "41e2e9eb5e5fa56e800e346d8c2b600742eb49839626faecdc37fb94a3a3c202"
-            )
+            cipher_ctx = cipher.encryptor()
 
-        def _sha1_derive(label: bytes) -> bytes:
-            d = hashes.Hash(hashes.SHA1())  # noqa: S303 — protocol-mandated
-            d.update(label + shared_secret)
-            return d.finalize()[:16]
-
-        aes_key = _sha1_derive(key_label)
-        aes_iv = _sha1_derive(iv_label)
-
-        # Single shared AES-128-CTR cipher context (encrypt == decrypt)
-        cipher = ciphers.Cipher(
-            ciphers.algorithms.AES(aes_key),
-            ciphers.modes.CTR(aes_iv),
-        )
-        cipher_ctx = cipher.encryptor()
-
-        return cls(ip_address, port, coap_ctx, cipher_ctx, model=model)
+            session = cls(ip_address, port, coap_ctx, cipher_ctx, model=model)
+            owns_context = False
+            return session
+        finally:
+            if owns_context:
+                await coap_ctx.shutdown()
 
     @classmethod
     async def connect(
@@ -657,8 +661,12 @@ class LtpduSession:
             LtpduSession with ``paths`` populated from ``/.well-known/core``.
         """
         session = await cls.kex(ip_address, port, timeout=timeout, model=model)
-        session.paths = await session.query_core(timeout=timeout)
-        return session
+        try:
+            session.paths = await session.query_core(timeout=timeout)
+            return session
+        except BaseException:
+            await session.close()
+            raise
 
     # -- lifecycle
 
@@ -743,8 +751,7 @@ class LtpduSession:
             raise AuthRejectedError(f"Auth rejected by device — status 0x{err_status.hex()}")
 
         # Auth success response is 12 bytes encrypted (4-byte TLV header +
-        # 8-byte payload), NOT the 5-byte 0x01F1+status the reference code
-        # assumed.  Accept any decrypted response where either:
+        # 8-byte payload). Accept any decrypted response where either:
         #   - tag is 0x01F1 and status byte is 0x00 (encrypted status), or
         #   - tag is 0x0104 (device echoes/refreshes the token), or
         #   - any other non-error tag (treat as success).

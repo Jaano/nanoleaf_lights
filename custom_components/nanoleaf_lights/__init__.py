@@ -15,6 +15,7 @@ from .const import (
     CONF_DEVICE_LINK_MODE,
     CONF_IP_ADDRESS,
     CONF_MODEL,
+    CONF_NAME,
     CONF_PORT,
     CONF_TOKEN,
     DEVICE_LINK_MODE_AUTO,
@@ -230,7 +231,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Revoke the device pairing token when the entry is deleted."""
-    from .nl_ltpdu import LtpduSession
+    from .session import connect_session
 
     data = entry.data
     ip = data[CONF_IP_ADDRESS]
@@ -239,9 +240,10 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     token = bytes.fromhex(data[CONF_TOKEN])
 
     try:
-        session = await LtpduSession.connect(ip, port, model=model, timeout=10.0)
+        session = await connect_session(
+            ip, port, model=model, name=data.get(CONF_NAME), token=token, timeout=10.0
+        )
         try:
-            await session.auth(token)
             await session.unpair()
             _LOGGER.debug("remove_entry: unpaired %s:%d", ip, port)
         finally:

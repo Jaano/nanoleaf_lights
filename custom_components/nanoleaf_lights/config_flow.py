@@ -35,13 +35,13 @@ if TYPE_CHECKING:
     from homeassistant.components.zeroconf import ZeroconfServiceInfo
     from homeassistant.config_entries import ConfigFlowResult
 
-    from .nl_ltpdu import LtpduSession
+    from .session import Session
 
 
-def _ltpdu_session() -> type[LtpduSession]:
-    """Lazy import of LtpduSession to avoid blocking the event loop on module load."""
-    from .nl_ltpdu import LtpduSession
-    return LtpduSession
+async def _connect_session(*args: Any, **kwargs: Any) -> Session:
+    """Import the protocol factory lazily when the flow needs a connection."""
+    from .session import connect_session
+    return await connect_session(*args, **kwargs)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -192,20 +192,20 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.debug(
                 "user: verifying reachability host=%s port=%d model=%s", host, port, model
             )
-            # Verify reachability by attempting KEX.
+            # Verify reachability with the new protocol, then legacy CoAP.
             try:
-                session = await _ltpdu_session().connect(host, port, model=model, timeout=10.0)
+                session = await _connect_session(host, port, model=model, timeout=10.0)
                 await session.close()
             except Exception as exc:
                 _LOGGER.debug("user: connect failed: %s", exc)
                 errors["base"] = "cannot_connect"
             else:
-                _LOGGER.debug("user: KEX succeeded, proceeding to pair")
+                _LOGGER.debug("user: connection succeeded, proceeding to pair")
                 self._discovery = {
                     CONF_IP_ADDRESS: host,
                     CONF_PORT: port,
                     CONF_MODEL: model,
-                    CONF_NAME: user_input.get(CONF_NAME, f"Nanoleaf @ {host}"),
+                    CONF_NAME: user_input.get(CONF_NAME) or None,
                     CONF_EUI64: None,
                 }
                 return await self.async_step_pair()
@@ -217,6 +217,7 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_IP_ADDRESS): str,
                     vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
                     vol.Optional(CONF_MODEL, default=""): str,
+                    vol.Optional(CONF_NAME, default=""): str,
                 }
             ),
             errors=errors,
@@ -239,29 +240,28 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             port = d[CONF_PORT]
             model = d.get(CONF_MODEL)
 
-            _LOGGER.debug("pair: attempting KEX host=%s port=%d model=%s", host, port, model)
+            _LOGGER.debug("pair: connecting host=%s port=%d model=%s", host, port, model)
             try:
-                session = await _ltpdu_session().connect(host, port, model=model, timeout=10.0)
-                _LOGGER.debug("pair: KEX succeeded, sending PIN")
-                token = await session.pair(pin)
-                _LOGGER.debug("pair: PIN accepted, token=%s", token.hex())
-                # Do NOT call auth() here — pair() already authenticates the session;
-                # calling auth() immediately after gets status 0x02 (already authenticated).
-
-                # Try to resolve eui64 from the device if not discovered via mDNS.
-                eui64 = d.get(CONF_EUI64)
-                if not eui64:
-                    try:
-                        device_info = await session.query_device_info(timeout=10.0)
-                        eui64 = device_info.get("eui64")
-                        _LOGGER.debug("pair: resolved eui64=%s from device_info", eui64)
-                    except Exception as exc:
-                        _LOGGER.debug("pair: could not fetch device_info for eui64: %s", exc)
-
-                await session.close()
+                session = await _connect_session(
+                    host, port, model=model, name=d.get(CONF_NAME), pin=pin, timeout=10.0
+                )
+                try:
+                    token = session.token
+                    _LOGGER.debug("pair: PIN accepted")
+                    # pair() has already authenticated; proceed directly to queries.
+                    eui64 = d.get(CONF_EUI64)
+                    if not eui64:
+                        try:
+                            device_info = await session.query_device_info(timeout=10.0)
+                            eui64 = device_info.get("eui64")
+                            _LOGGER.debug("pair: resolved eui64=%s from device_info", eui64)
+                        except Exception as exc:
+                            _LOGGER.debug("pair: could not fetch device_info for eui64: %s", exc)
+                finally:
+                    await session.close()
             except RuntimeError as exc:
                 _LOGGER.debug("pair: RuntimeError: %s", exc)
-                if "pin" in str(exc).lower() or "unexpected" in str(exc).lower():
+                if any(word in str(exc).lower() for word in ("pin", "pairing code", "unexpected")):
                     errors["base"] = "invalid_pin"
                 else:
                     errors["base"] = "cannot_connect"
@@ -279,13 +279,13 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 _LOGGER.debug("pair: creating config entry title=%r", d.get(CONF_NAME))
                 return self.async_create_entry(
-                    title=d.get(CONF_NAME, "Nanoleaf light"),
+                    title=d.get(CONF_NAME) or f"Nanoleaf @ {host}",
                     data={
                         CONF_IP_ADDRESS: host,
                         CONF_PORT: port,
                         CONF_MODEL: model,
                         CONF_TOKEN: token.hex(),
-                        CONF_NAME: d.get(CONF_NAME, "Nanoleaf light"),
+                        CONF_NAME: d.get(CONF_NAME) or f"Nanoleaf @ {host}",
                     },
                 )
 
@@ -295,7 +295,7 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({vol.Required("pairing_code"): str}),
             errors=errors,
             description_placeholders={
-                "name": d.get(CONF_NAME, ""),
+                "name": d.get(CONF_NAME) or "Nanoleaf light",
                 "model": d.get(CONF_MODEL) or "unknown",
                 "host": d.get(CONF_IP_ADDRESS, ""),
             },
@@ -331,18 +331,24 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             model = data.get(CONF_MODEL)
 
             _LOGGER.debug(
-                "reauth_confirm: attempting KEX host=%s port=%d model=%s", host, port, model
+                "reauth_confirm: connecting host=%s port=%d model=%s", host, port, model
             )
             try:
-                session = await _ltpdu_session().connect(host, port, model=model, timeout=10.0)
-                _LOGGER.debug("reauth_confirm: KEX succeeded, sending pairing code")
-                token = await session.pair(pin)
-                _LOGGER.debug("reauth_confirm: pairing code accepted, new token=%s", token.hex())
-                # Do NOT call auth() here — same reason as async_step_pair.
-                await session.close()
+                session = await _connect_session(
+                    host, port, model=model, name=data.get(CONF_NAME), pin=pin, timeout=10.0
+                )
+                try:
+                    token = session.token
+                    _LOGGER.debug("reauth_confirm: pairing code accepted")
+                finally:
+                    await session.close()
             except RuntimeError as exc:
                 _LOGGER.debug("reauth_confirm: RuntimeError: %s", exc)
-                errors["base"] = "invalid_pin"
+                errors["base"] = (
+                    "invalid_pin" if any(
+                        word in str(exc).lower() for word in ("pin", "pairing code", "unexpected")
+                    ) else "cannot_connect"
+                )
             except Exception as exc:
                 _LOGGER.exception("reauth_confirm: unexpected error: %s", exc)
                 errors["base"] = "unknown"
@@ -383,27 +389,32 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             port = user_input.get(CONF_PORT, DEFAULT_PORT)
             model = user_input.get(CONF_MODEL) or None
             pin = (user_input.get("pairing_code") or "").strip()
+            name = user_input.get(CONF_NAME, reconfigure_entry.data.get(CONF_NAME)) or None
 
             _LOGGER.debug(
                 "reconfigure: host=%s port=%d model=%s re-pair=%s",
                 host, port, model, bool(pin),
             )
             try:
-                session = await _ltpdu_session().connect(host, port, model=model, timeout=10.0)
                 if pin:
                     _LOGGER.debug("reconfigure: re-pairing with new PIN")
-                    token_bytes = await session.pair(pin)
-                    token = token_bytes.hex()
-                    _LOGGER.debug("reconfigure: re-paired, new token=%s", token)
                 else:
                     _LOGGER.debug("reconfigure: verifying existing token at new address")
-                    existing_token = bytes.fromhex(reconfigure_entry.data[CONF_TOKEN])
-                    await session.auth(existing_token, timeout=10.0)
-                    token = reconfigure_entry.data[CONF_TOKEN]
-                await session.close()
+                session = await _connect_session(
+                    host, port, model=model, name=name,
+                    pin=pin or None,
+                    token=None if pin else bytes.fromhex(reconfigure_entry.data[CONF_TOKEN]),
+                    timeout=10.0,
+                )
+                try:
+                    token = session.token.hex()
+                finally:
+                    await session.close()
             except RuntimeError as exc:
                 _LOGGER.debug("reconfigure: RuntimeError: %s", exc)
-                if pin and ("pin" in str(exc).lower() or "unexpected" in str(exc).lower()):
+                if pin and any(
+                    word in str(exc).lower() for word in ("pin", "pairing code", "unexpected")
+                ):
                     errors["base"] = "invalid_pin"
                 else:
                     errors["base"] = "cannot_connect"
@@ -420,6 +431,7 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_PORT: port,
                         CONF_MODEL: model,
                         CONF_TOKEN: token,
+                        **({CONF_NAME: name} if CONF_NAME in user_input else {}),
                     },
                     reason="reconfigure_successful",
                 )
@@ -432,6 +444,7 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_IP_ADDRESS, default=data.get(CONF_IP_ADDRESS, "")): str,
                     vol.Optional(CONF_PORT, default=data.get(CONF_PORT, DEFAULT_PORT)): int,
                     vol.Optional(CONF_MODEL, default=data.get(CONF_MODEL) or ""): str,
+                    vol.Optional(CONF_NAME, default=data.get(CONF_NAME) or ""): str,
                     vol.Optional("pairing_code", default=""): str,
                 }
             ),

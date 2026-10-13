@@ -24,6 +24,7 @@ from .const import (
 )
 from .coordinator import NanoleafLtpduCoordinator
 from .entity import NanoleafLtpduEntity
+from .session import scene_fallback_name, scene_handle_bytes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,8 +99,10 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
         current = (self.coordinator.data or {}).get("current_scene", b"")
         if not current:
             return None
-        b = current[0]
-        return (self.coordinator.data or {}).get("scene_names", {}).get(b, f"Scene 0x{b:02x}")
+        handle = scene_handle_bytes(current)
+        return (self.coordinator.data or {}).get("scene_names", {}).get(
+            handle, scene_fallback_name(handle)
+        )
 
     @property
     def effect_list(self) -> list[str] | None:
@@ -150,11 +153,11 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
 
     async def _play_effect(self, effect_name: str) -> None:
         """Resolve an effect name to a scene handle and play it."""
-        scene_names: dict[int, str] = (self.coordinator.data or {}).get("scene_names", {})
+        scene_names: dict[bytes, str] = (self.coordinator.data or {}).get("scene_names", {})
         for b, name in scene_names.items():
             if name == effect_name:
                 await self.coordinator.async_service_call(
-                    lambda s, handle=b: s.play_scene(bytes([handle]))
+                    lambda s, handle=b: s.play_scene(handle)
                 )
                 return
         _LOGGER.warning("Effect %r not found in scene list", effect_name)

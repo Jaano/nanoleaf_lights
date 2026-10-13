@@ -34,7 +34,7 @@ NL55/NL58/NL62 use the same protocol variant as NL45 and are expected to work bu
 | Thread diagnostics | yes (sensor entities) |
 | Device info | yes (device page) |
 
-Scenes are stored on the device as palette data and resolved to cloud scene names via `scenes.json`. See [SCENES.md](SCENES.md).
+New firmware reports scene names directly. Older firmware stores palette data that is resolved through `scenes.json`. See [SCENES.md](SCENES.md).
 
 ---
 
@@ -59,7 +59,7 @@ Updates will appear in HACS like any other integration; click **Update** and res
 
 ### Option 2: Manual installation
 
-1. Copy (or symlink) the `custom_components/nanoleaf_lights/` directory from this repository into your Home Assistant `config/custom_components/` directory. The final path should be `config/custom_components/nanoleaf_lights/`.
+1. Copy the `custom_components/nanoleaf_lights/` directory into your Home Assistant `config/custom_components/` directory, following its symlinks so the protocol modules are copied as files. The final path should be `config/custom_components/nanoleaf_lights/`. If the entire checkout is accessible to HA, symlinking the integration directory also works.
 2. Restart Home Assistant.
 3. Continue with [Adding a Device](#adding-a-device).
 
@@ -70,7 +70,7 @@ The integration requires `aiocoap` and `cryptography`; Home Assistant installs t
 > **Prerequisite:** The bulb must already be joined to your Thread network via Matter (e.g. using the Nanoleaf app or Apple Home). Matter is not used by this integration — only for the initial network join.
 
 1. Go to **Settings -> Devices & Services -> Add Integration** and search for **Enhanced Nanoleaf Lights**.
-2. Devices on the local Thread network are auto-discovered via mDNS. Alternatively enter the address manually (IPv6, IPv4, or hostname).
+2. Devices on the local Thread network are auto-discovered via mDNS. For manual setup, enter the address and advertised port (`12566` for NL67 firmware 5.1.45; older devices commonly use `5653` or `5683`). New-protocol pairing also needs the bulb's advertised Nanoleaf name, such as `Nanoleaf A19 E20-78E2`; enter that in **Discovered Name**.
 3. Enter the **Pairing Code** printed on the bulb.
 
 ### Reconfiguring a Device
@@ -81,7 +81,7 @@ To recover without removing and re-adding the integration:
 
 1. Go to **Settings -> Devices & Services -> Enhanced Nanoleaf Lights** and open the affected device.
 2. Click the **⋮** menu -> **Reconfigure**.
-3. Confirm the new address (auto-discovered or entered manually) and, if the bulb was factory-reset, enter the new **Pairing Code**.
+3. Confirm the new address and advertised port. If the bulb was factory-reset or upgraded from the legacy protocol, enter its **Pairing Code** to obtain new credentials. For manual new-protocol pairing, also supply the advertised **Discovered Name**.
 
 The device's existing entities, history, and automations are preserved.
 
@@ -97,7 +97,7 @@ The Enhanced light entity stays separate from the Matter/HomeKit light entity, s
 
 ### Scene Support
 
-Scenes are automatically resolved to their cloud names. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. This download can take several minutes to complete. See [SCENES.md](SCENES.md) for how palette matching works.
+New firmware supplies scene names directly. For older firmware, names are resolved from the local scene database. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. This download can take several minutes to complete. See [SCENES.md](SCENES.md) for how palette matching works.
 
 ### Polling
 
@@ -107,13 +107,15 @@ The integration polls every 5 seconds. Device info, scene list, and scene names 
 
 ## How It Works
 
-Devices are controlled via LTPDU — a CoAP/UDP protocol with X25519 key exchange and AES-128-CTR encryption. Separate from Matter and no cloud required.
+The integration tries LTPDUv3 first. If connection, pairing, or authentication fails, it closes that session and tries the existing CoAP/X25519 handshake at the same advertised address and port. Existing legacy credentials remain supported; upgrading to v3 requires pairing again.
 
-- **Transport:** CoAP over UDP via Thread border router
+- **LTPDUv3:** Custom UDP framing, SRP pairing, and negotiated AES-CTR/CRC or AES-CCM encryption. New NL67 scene IDs and activation are supported.
+- **Legacy:** Existing CoAP/X25519 and AES-128-CTR protocol.
+- **Transport:** UDP via the Thread border router; independent of Matter, with no cloud required for control.
 - **Discovery:** mDNS `_ltpdu._udp.local.`
 - **Addressing:** IPv6 natively; IPv4 and hostname also work when NAT64 is enabled on the border router
 
-See [LTPDU.md](LTPDU.md) for the full protocol reference.
+V3 support has passed offline protocol tests and local simulated-device tests. Hardware validation on firmware 5.1.45 remains pending. See [LTPDU.md](LTPDU.md) for the protocol reference.
 
 ---
 

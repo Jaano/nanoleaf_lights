@@ -1,6 +1,60 @@
 # LTPDU Protocol Reference
 
-Local control protocol used by Nanoleaf Essentials devices. CoAP over UDP, encrypted with X25519 + AES-128-CTR.
+Local control protocols used by Nanoleaf Essentials devices. The legacy protocol uses CoAP/X25519/AES-CTR. NL67 firmware 5.1.45 advertises LTPDUv3 on UDP port 12566. The HA integration attempts v3 first and falls back to legacy after any connection/authentication/pairing failure. Cancellation stops both attempts.
+
+---
+
+## LTPDUv3 (NL67 firmware 5.1.45)
+
+Pairing, reconnection, and control exchanges pass offline protocol tests
+and a local simulated UDP device.
+A live Python-to-bulb exchange has not yet been validated.
+
+All header integers are big-endian. Custom UDP requests are
+`version:u8=1 | type:u8=1 | message_id:u16 | client_id:u16 | endpoint:u8 |
+method:u8 | payload_length:u32 | payload`. Responses substitute `type=2` and
+`status:u16` for the endpoint/method bytes. Endpoint codes are secure=1,
+control=2, events=3, identify=4, info=5. Methods GET/POST/PUT/DELETE are 0/1/2/3.
+Status 0/1 is success; 2/3/4 maps to bad request/unauthorized/too large.
+Requests retry with identical bytes and message IDs. The initial client ID
+is `0xffff`; successful responses supply the assigned client ID.
+
+Secure TLVs use `tag:u8 | length:u16 | value`. Fresh pairing sends type 1,
+SRP public A (tag 3), and capabilities byte 2 (tag 7). The challenge supplies
+salt (tag 2), public B (tag 3), and cipher version (tag 17, two bytes).
+Proof M is tag 4; server proof H(A,M,K) must verify before using the cipher.
+An encrypted empty tag 5 retrieves an access token in tag 6. Reconnect uses
+authentication type 2 and the saved token. Unpair sends encrypted empty tag 9.
+
+The SRP username is the advertised Nanoleaf name before its first hyphen.
+The PIN password consists of numeric bytes, one per decimal digit, not ASCII.
+NL67 uses SHA-256, generator 2 and the 512-bit SRP group. Integer
+encodings are minimal big-endian, including k, u, M and shared-secret hashes.
+The HA token field keeps a versioned hex-encoded credential envelope with the
+username, client ID, group, and access token; it never stores the PIN.
+Legacy eight-byte tokens cannot authenticate the v3 protocol.
+
+Cipher key material is SHA-256 of the SRP shared-secret hash K. Its first 16
+bytes are the AES key and bytes 16..23 are the fixed nonce tail. Supported
+versions are 0x0300 (continuous CTR, IV=counter:u64+tail; CRC16/XMODEM two-byte
+suffix), 0x0301 (CCM nonce=counter:u40+tail), and 0x0302 (CCM
+nonce=counter:u32+tail). CCM has a four-byte tag and no AAD. A single counter
+advances across requests and responses. Interrupted or invalid encrypted
+exchanges require a fresh handshake before further operations.
+
+Control messages inside encrypted POST `nlltpdu` use **16-bit tags** and
+16-bit lengths: endpoint tag 1, payload tag 2, method tag 4. Responses echo
+the endpoint and return tag 3 with a one-byte operation status followed by
+data; status zero means success. Device/effect values use 8-bit tags with
+16-bit lengths. Basic `lb/0/*` controls retain their endpoint names.
+
+Firmware 5.x uses `effect/ids` and `effect` for scenes. IDs are four-byte
+opaque handles, and names are included in scene data. Activation POSTs the
+UTF-8 name to `lb/0/effect/select`; that endpoint returns the selected name.
+The backend resolves it back to an ID for HA. Optional Thread diagnostics
+may be unsupported; their failure does not prevent control.
+
+The following sections describe the preserved **legacy protocol**.
 
 ---
 
@@ -126,15 +180,15 @@ Color model is **HSV** (hue, saturation, brightness).
 All scene commands are sent as `TLV(0x0002, payload)` on the `ci` endpoint, where
 `payload` is a `SimpleSceneCommand` TLV: a 2-byte tag + 2-byte length + data.
 
-| Tag | Operation | Source |
-|---|---|---|
-| `0x0701` | Preview scene (display without saving) | Android confirmed |
-| `0x0702` | Add (persist) scene | Android confirmed |
-| `0x0703` | List scene ID handles | Android confirmed |
-| `0x0704` | Get scene data (takes scene ID) | Android confirmed |
-| `0x0705` | Delete scene | **inferred only** — not in Android app |
-| `0x0706` | Activate / play scene | Android confirmed |
-| `0x0707` | Get currently executing scene | **inferred only** — not in Android app |
+| Tag | Operation |
+|---|---|
+| `0x0701` | Preview scene (display without saving) |
+| `0x0702` | Add (persist) scene |
+| `0x0703` | List scene ID handles |
+| `0x0704` | Get scene data (takes scene ID) |
+| `0x0705` | Delete scene (**inferred**) |
+| `0x0706` | Activate / play scene |
+| `0x0707` | Get currently executing scene (**inferred**) |
 
 ### SimpleSceneTLV payload format (tags 0x0702 / 0x0701)
 
@@ -159,7 +213,7 @@ Each `TLV1`: `tag(1B) + length(2B BE) + data`.
 | STRIPES | `0x06` | transitTime, linearDir, segment | 24, 0, 50 |
 
 The `cli.py` implementation uses FADE (`0x01`) for all cloud scenes:
-`metadata = [scene_id, 0x01, 24, 0, 1]` (5 bytes). Confirmed correct by Android source.
+`metadata = [scene_id, 0x01, 24, 0, 1]` (5 bytes).
 
 **Palette bytes** = `count(1B) + color entries`:
 
@@ -186,7 +240,7 @@ The repeat-count extension is optional — devices accept plain (non-repeated) e
 |---|---|---|
 | NL45 (HomeKit Essentials) | any | `ci` endpoint, tag `0x0702` |
 | NL67 (Matter Essentials) | < 5.0.0 | `ci` endpoint, tag `0x0702` |
-| NL67 (Matter Essentials) | ≥ 5.0.0 | Android uses Matter attribute write (EFFECT_V2 UUID `A18E6901-…`); `ci` + `0x0702` still accepted empirically |
+| NL67 (Matter Essentials) | ≥ 5.0.0 | Matter attribute write (EFFECT_V2 UUID `A18E6901-…`); `ci` + `0x0702` still accepted empirically |
 
 Scenes are not accessible via the Matter data model. The `ci` endpoint is
 LTPDU-only.

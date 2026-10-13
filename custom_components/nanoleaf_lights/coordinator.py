@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     CONF_IP_ADDRESS,
     CONF_MODEL,
+    CONF_NAME,
     CONF_PORT,
     CONF_TOKEN,
     DOMAIN,
@@ -24,7 +25,11 @@ from .const import (
     STORAGE_DIR,
     UPDATE_INTERVAL,
 )
-from .nl_ltpdu import AuthRejectedError, LtpduSession, SceneLookup, SessionExpiredError
+from .nl_ltpdu import AuthRejectedError, SceneLookup, SessionExpiredError
+from .session import connect_session, scene_fallback_name, scene_handle_bytes
+
+if TYPE_CHECKING:
+    from .session import Session
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,7 +54,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=UPDATE_INTERVAL,
         )
         self.config_entry = entry
-        self._session: LtpduSession | None = None
+        self._session: Session | None = None
         self.companion_device_entry: Any | None = None
         self.connected: bool = False
         self._consecutive_auth_failures: int = 0
@@ -63,8 +68,8 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Session helpers
     # ------------------------------------------------------------------
 
-    async def _open_session(self) -> LtpduSession:
-        """Perform KEX + auth and return a ready session."""
+    async def _open_session(self) -> Session:
+        """Authenticate with LTPDUv3, falling back to legacy CoAP."""
         data = self.config_entry.data
         ip = data[CONF_IP_ADDRESS]
         port = data[CONF_PORT]
@@ -72,17 +77,16 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         token = bytes.fromhex(data[CONF_TOKEN])
 
         try:
-            session = await LtpduSession.connect(ip, port, model=model, timeout=10.0)
+            session = await connect_session(
+                ip, port, model=model, name=data.get(CONF_NAME), token=token, timeout=10.0
+            )
+        except AuthRejectedError:
+            self.connected = True
+            raise
         except Exception:
             self.connected = False
             raise
-        # KEX succeeded — the device is reachable, even if auth fails below.
         self.connected = True
-        try:
-            await session.auth(token)
-        except Exception:
-            await session.close()
-            raise
         return session
 
     async def _safe_close(self) -> None:
@@ -113,21 +117,25 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as exc:
             _LOGGER.debug("Could not fetch Thread info: %s", exc)
 
-        scene_handles: list[int] = []
+        scene_handles: list[bytes] = []
         try:
-            scene_handles = list(await self._session.list_scenes(timeout=10.0))
+            scene_handles = [
+                scene_handle_bytes(handle)
+                for handle in await self._session.list_scenes(timeout=10.0)
+            ]
         except Exception as exc:
             _LOGGER.warning("Could not fetch scene list: %s", exc)
 
-        scene_names: dict[int, str] = {}
+        scene_names: dict[bytes, str] = {}
         for b in scene_handles:
             try:
-                detail = await self._session.get_scene(bytes([b]), timeout=10.0)
+                detail = await self._session.get_scene(b, timeout=10.0)
                 palette = (detail or {}).get("palette", "")
                 match = self._scene_lookup.resolve(palette) if palette else None
-                scene_names[b] = match[0] if match else f"Scene 0x{b:02x}"
+                reported_name = (detail or {}).get("name")
+                scene_names[b] = reported_name or (match[0] if match else scene_fallback_name(b))
             except Exception:
-                scene_names[b] = f"Scene 0x{b:02x}"
+                scene_names[b] = scene_fallback_name(b)
 
         # Merge into current data (may still be None on first run).
         existing = self.data or {}
@@ -201,7 +209,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def async_service_call(
-        self, action: Callable[[LtpduSession], Coroutine[Any, Any, None]]
+        self, action: Callable[[Session], Coroutine[Any, Any, None]]
     ) -> None:
         """Execute *action(session)*, opening or reauthenticating as needed.
 
@@ -231,17 +239,20 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Reload the scene lookup after scenes.json has been updated."""
         self._scene_lookup = await SceneLookup.from_path_async(self.scenes_path)
         existing = self.data or {}
-        scene_handles: list[int] = existing.get("scene_handles", [])
-        scene_names: dict[int, str] = {}
+        scene_handles: list[bytes] = existing.get("scene_handles", [])
+        scene_names: dict[bytes, str] = {}
         if self._session is not None:
             for b in scene_handles:
                 try:
-                    detail = await self._session.get_scene(bytes([b]), timeout=10.0)
+                    detail = await self._session.get_scene(b, timeout=10.0)
                     palette = (detail or {}).get("palette", "")
                     match = self._scene_lookup.resolve(palette) if palette else None
-                    scene_names[b] = match[0] if match else f"Scene 0x{b:02x}"
+                    reported_name = (detail or {}).get("name")
+                    scene_names[b] = reported_name or (
+                        match[0] if match else scene_fallback_name(b)
+                    )
                 except Exception:
-                    scene_names[b] = f"Scene 0x{b:02x}"
+                    scene_names[b] = scene_fallback_name(b)
         self.async_set_updated_data({**existing, "scene_names": scene_names})
 
     # ------------------------------------------------------------------

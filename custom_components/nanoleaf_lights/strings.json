@@ -8,12 +8,14 @@
         "data": {
           "ip_address": "IP Address",
           "port": "Port",
-          "model": "Model (e.g. NL67, NL45)"
+          "model": "Model (e.g. NL67, NL45)",
+          "name": "Discovered device name"
         },
         "data_description": {
           "ip_address": "IPv6 address of the device (ULA preferred, e.g. fd00::...). Found via mDNS or your router.",
-          "port": "CoAP port. Default is 5653. Older devices (NL45 and earlier) may use 5683.",
-          "model": "Device model from the label or mDNS. Required for NL45/NL55/NL58/NL62."
+          "port": "Use the discovered device port: 12566 for newer firmware, or 5653/5683 for legacy firmware.",
+          "model": "Device model from the label or mDNS. Required for NL45/NL55/NL58/NL62.",
+          "name": "Device name shown by discovery or Nanoleaf Desktop (e.g. Essentials-E20). Required for pairing with newer firmware."
         }
       },
       "pair": {
@@ -43,13 +45,15 @@
           "ip_address": "IP Address",
           "port": "Port",
           "model": "Model (e.g. NL67, NL45)",
-          "pairing_code": "Pairing Code (optional)"
+          "pairing_code": "Pairing Code (optional)",
+          "name": "Discovered device name"
         },
         "data_description": {
           "ip_address": "New IPv6 address of the device.",
-          "port": "CoAP port. Default is 5653. Older devices (NL45 and earlier) may use 5683.",
+          "port": "Use the discovered device port: 12566 for newer firmware, or 5653/5683 for legacy firmware.",
           "model": "Device model. Required for NL45/NL55/NL58/NL62.",
-          "pairing_code": "Leave blank to keep the current token. Enter the code from the device label to re-pair."
+          "pairing_code": "Leave blank to keep the current token. Enter the code from the device label to re-pair.",
+          "name": "Device name shown by discovery or Nanoleaf Desktop (e.g. Essentials-E20). Required for pairing with newer firmware."
         }
       }
     },

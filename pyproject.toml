@@ -22,7 +22,7 @@ nanoleaf = "cli:main"
 
 [tool.setuptools]
 packages = []
-py-modules = ["nl_ltpdu", "nl_api", "cli"]
+py-modules = ["nl_ltpdu", "nl_ltpdu_v3", "nl_api", "cli"]
 
 [tool.ruff]
 target-version = "py314"

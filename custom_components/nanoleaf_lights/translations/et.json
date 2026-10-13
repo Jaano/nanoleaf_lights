@@ -8,12 +8,14 @@
         "data": {
           "ip_address": "IP-aadress",
           "port": "Port",
-          "model": "Mudel (nt NL67, NL45)"
+          "model": "Mudel (nt NL67, NL45)",
+          "name": "Seadme avastatud nimi"
         },
         "data_description": {
           "ip_address": "Seadme IPv6-aadress (eelistatud ULA, nt fd00::…). Leitav mDNS kaudu või ruuterist.",
-          "port": "CoAP-port. Vaikimisi 5653. Vanemad seadmed (NL45 ja varasemad) võivad kasutada 5683.",
-          "model": "Seadme mudel sildilt või mDNS-ist. Nõutav NL45/NL55/NL58/NL62 puhul."
+          "port": "Seadme avastatud port: uuema püsivara puhul 12566, vanema puhul 5653 või 5683.",
+          "model": "Seadme mudel sildilt või mDNS-ist. Nõutav NL45/NL55/NL58/NL62 puhul.",
+          "name": "Seadme nimi mDNS-ist või Nanoleaf Desktopist (nt Essentials-E20). Vajalik uuema püsivaraga sidumiseks."
         }
       },
       "pair": {
@@ -43,13 +45,15 @@
           "ip_address": "IP-aadress",
           "port": "Port",
           "model": "Mudel (nt NL67, NL45)",
-          "pairing_code": "Sidumiskood (valikuline)"
+          "pairing_code": "Sidumiskood (valikuline)",
+          "name": "Seadme avastatud nimi"
         },
         "data_description": {
           "ip_address": "Seadme uus IPv6-aadress.",
-          "port": "CoAP-port. Vaikimisi 5653. Vanemad seadmed (NL45 ja varasemad) võivad kasutada 5683.",
+          "port": "Seadme avastatud port: uuema püsivara puhul 12566, vanema puhul 5653 või 5683.",
           "model": "Seadme mudel. Nõutav NL45/NL55/NL58/NL62 puhul.",
-          "pairing_code": "Jäta tühjaks, et säilitada praegune pääsutõend. Sisesta kood sildilt, et seade uuesti siduda."
+          "pairing_code": "Jäta tühjaks, et säilitada praegune pääsutõend. Sisesta kood sildilt, et seade uuesti siduda.",
+          "name": "Seadme nimi mDNS-ist või Nanoleaf Desktopist (nt Essentials-E20). Vajalik uuema püsivaraga sidumiseks."
         }
       }
     },
