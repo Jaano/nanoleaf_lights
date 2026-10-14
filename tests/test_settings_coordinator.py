@@ -2,8 +2,10 @@
 
 # ruff: noqa: ANN001, ANN201, ANN202, F811
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,19 +27,31 @@ def settings(ha_modules):
     coordinator.config_entry = SimpleNamespace(data={"model": "NL67"})
     coordinator.connected = True
     coordinator._settings_updated_at = 0.0
+    coordinator._settings_lock = asyncio.Lock()
     coordinator._scene_lookup = object()
     coordinator.data = {
+        "device": {"model_number": "NL67", "firmware_version": "5.1.45"},
         "capabilities": {
             "circadian": True,
             "time": True,
             "location": True,
             "power_loss_recovery": True,
             "motions": True,
-        }
+        },
     }
     coordinator.async_set_updated_data = lambda data: setattr(coordinator, "data", data)
     coordinator.async_request_refresh = AsyncMock()
     device = SimpleNamespace(
+        query_device_info=AsyncMock(
+            return_value={
+                "model_number": "NL67",
+                "firmware_version": "5.1.45",
+            }
+        ),
+        query_thread_capabilities=AsyncMock(return_value={}),
+        query_thread_role=AsyncMock(return_value={}),
+        query_thread_network_info=AsyncMock(return_value={}),
+        list_scenes=AsyncMock(return_value=[]),
         set_device_time=AsyncMock(),
         set_device_location=AsyncMock(),
         set_circadian_enabled=AsyncMock(),
@@ -76,6 +90,105 @@ async def test_settings_gate_does_not_probe_unsupported_features(settings):
     device.query_circadian_settings.assert_not_awaited()
     device.query_motion_capabilities.assert_not_awaited()
     assert coordinator.data["circadian"] is None
+
+
+@pytest.mark.parametrize("initial_info", [RuntimeError("temporary di error"), {}])
+async def test_failed_metadata_is_retried_without_reconnecting(
+    settings, ha_modules, monkeypatch, initial_info
+):
+    coordinator, device = settings
+    clock = [100.0]
+    monkeypatch.setattr(ha_modules.coordinator, "monotonic", lambda: clock[0])
+    device.query_device_info.side_effect = [
+        initial_info,
+        {"model_number": "NL67", "firmware_version": "5.1.45"},
+    ]
+    await coordinator._refresh_static_data()
+    coordinator.data = await coordinator._async_update_data()
+    assert not coordinator.data["capabilities"]["circadian"]
+    assert device.query_device_info.await_count == 1
+    device.query_circadian_settings.assert_not_awaited()
+
+    clock[0] = 159.0
+    coordinator.data = await coordinator._async_update_data()
+    assert device.query_device_info.await_count == 1
+
+    clock[0] = 160.0
+    coordinator.data = await coordinator._async_update_data()
+    assert device.query_device_info.await_count == 2
+    assert coordinator.data["capabilities"]["circadian"]
+    assert coordinator.data["circadian"]["enabled"] is False
+    assert coordinator.data["motion_capabilities"]["motions"] == [{"name": "fade"}]
+    assert coordinator._session is device
+    device.close.assert_not_awaited()
+
+
+async def test_settings_read_preserves_unrelated_updates_while_awaiting(settings):
+    coordinator, device = settings
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    async def clock(**kwargs: Any):
+        started.set()
+        await resume.wait()
+        return {"epoch_seconds": 42, "timezone_offset_seconds": 0}
+
+    device.query_device_time.side_effect = clock
+    poll = asyncio.create_task(coordinator._refresh_settings({"clock"}))
+    await started.wait()
+    coordinator.async_set_updated_data(
+        {
+            **coordinator.data,
+            "scene_names": {b"\x01": "New name"},
+        }
+    )
+    resume.set()
+    await poll
+    assert coordinator.data["scene_names"] == {b"\x01": "New name"}
+    assert coordinator.data["clock"]["epoch_seconds"] == 42
+
+
+async def test_motion_action_does_not_get_overwritten_by_inflight_settings_poll(settings):
+    coordinator, device = settings
+    started, resume = asyncio.Event(), asyncio.Event()
+    coordinator.data["motion_capabilities"] = {"motions": [{"name": "old"}]}
+    device.query_motion_capabilities.return_value = {"motions": [{"name": "new"}]}
+
+    async def clock(**kwargs: Any):
+        started.set()
+        await resume.wait()
+        return {"epoch_seconds": 42, "timezone_offset_seconds": 0}
+
+    device.query_device_time.side_effect = clock
+    poll = asyncio.create_task(coordinator._refresh_settings({"clock"}))
+    await started.wait()
+    action = asyncio.create_task(coordinator.async_get_motion_capabilities())
+    await asyncio.sleep(0)
+    device.query_motion_capabilities.assert_not_awaited()
+    resume.set()
+    _, result = await asyncio.gather(poll, action)
+    assert coordinator.data["motion_capabilities"] == result == {"motions": [{"name": "new"}]}
+
+
+async def test_settings_write_and_readback_are_serialized_with_polling(settings):
+    coordinator, device = settings
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    async def clock(**kwargs: Any):
+        started.set()
+        await resume.wait()
+        return {"epoch_seconds": 42, "timezone_offset_seconds": 0}
+
+    device.query_device_time.side_effect = clock
+    device.query_power_loss_recovery.return_value = True
+    poll = asyncio.create_task(coordinator._refresh_settings({"clock"}))
+    await started.wait()
+    action = asyncio.create_task(coordinator.async_set_power_loss_recovery(True))
+    await asyncio.sleep(0)
+    device.set_power_loss_recovery.assert_not_awaited()
+    resume.set()
+    await asyncio.gather(poll, action)
+    device.set_power_loss_recovery.assert_awaited_once_with(True)
+    assert coordinator.data["power_loss_recovery"] is True
 
 
 async def test_poll_keeps_basic_controls_when_optional_settings_rejected(settings):

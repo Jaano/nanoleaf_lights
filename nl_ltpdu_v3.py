@@ -518,11 +518,9 @@ def _parse_circadian(data: bytes) -> dict[str, Any] | None:
         return None
     if data[0] == 0:
         data = data[1:]
-    try:
-        fields = _fields(data, length_size=1)
-    except RuntimeError:
-        _circadian_status(data, True)
-        raise
+    if len(data) == 1:
+        raise RuntimeError(f"Circadian configuration read returned status {data[0]}")
+    fields = _fields(data, length_size=1)
     config: dict[str, Any] = {"version": None}
     for tag, value in fields:
         if tag == 1:
@@ -585,7 +583,7 @@ def _encode_circadian(config: dict[str, Any], model: str | None, firmware: str |
         elif tag <= 5:
             number = _checked_number(config[name], 0, 65535, name)
         else:
-            kelvin = _checked_number(config[name], 1200, 6500, name)
+            kelvin = _checked_number(config[name], 1200, 6535, name)
             kelvin = max(minimum_k, min(maximum_k, kelvin))
             number = (1_000_000 + kelvin // 2) // kelvin
         pieces.append(_tlv8(tag, number.to_bytes(2, "big", signed=tag <= 2 and not explicit)))
@@ -869,8 +867,16 @@ class V3Controls:
         flag = _uint(enabled, "circadian enabled", 1)
         if flag not in (0, 1):
             _circadian_status(enabled, False)
-        raw = await self._request("ac", timeout=timeout)
-        return {"config": _parse_circadian(raw), "enabled": bool(flag)}
+        try:
+            raw = await self._request("ac", timeout=timeout)
+            config = _parse_circadian(raw)
+        except (SessionExpiredError, TimeoutError, OSError):
+            raise
+        except (RuntimeError, ValueError) as exc:
+            if getattr(self, "_cipher_corrupted", False) or getattr(self, "_broken", False):
+                raise
+            return {"config": None, "enabled": bool(flag), "config_error": str(exc)}
+        return {"config": config, "enabled": bool(flag)}
 
     async def set_circadian_config(self, config: dict[str, Any], timeout: float = 10.0) -> None:
         await _settings_capabilities(self, timeout, "circadian")

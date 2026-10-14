@@ -269,12 +269,87 @@ async def test_one_d_malformed_motion_response_never_falls_back() -> None:
         await session.query_motion_capabilities()
 
 
-@pytest.mark.parametrize("raw", [b"\x03", b"\x05"])
-async def test_circadian_read_status_errors_are_preserved(raw: bytes) -> None:
+@pytest.mark.parametrize("raw", [b"\x02", b"\x03", b"\x05"])
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_circadian_read_status_errors_are_preserved(raw: bytes, enabled: bool) -> None:
     session = SettingsSession()
-    session.responses = {("lb/0/ac/en", 0): b"\x00", ("ac", 0): raw}
-    with pytest.raises(RuntimeError):
+    session.responses = {("lb/0/ac/en", 0): bytes([int(enabled)]), ("ac", 0): raw}
+    assert await session.query_circadian_settings() == {
+        "enabled": enabled,
+        "config": None,
+        "config_error": f"Circadian configuration read returned status {raw[0]}",
+    }
+
+
+async def test_circadian_endpoint_failure_keeps_enabled_flag() -> None:
+    session = SettingsSession()
+    request = session._request
+
+    async def rejected_config(endpoint: str, **kwargs: Any) -> bytes:
+        if endpoint == "ac":
+            raise RuntimeError("ac returned status 0x02")
+        return await request(endpoint, **kwargs)
+
+    session.responses[("lb/0/ac/en", 0)] = b"\x01"
+    session._request = rejected_config
+    assert await session.query_circadian_settings() == {
+        "enabled": True,
+        "config": None,
+        "config_error": "ac returned status 0x02",
+    }
+
+
+@pytest.mark.parametrize("error", [TimeoutError("gone"), OSError("network lost")])
+async def test_circadian_transport_failure_is_not_an_optional_config_error(
+    error: Exception,
+) -> None:
+    session = SettingsSession()
+
+    async def failed_config(endpoint: str, **kwargs: Any) -> bytes:
+        if endpoint == "ac":
+            raise error
+        return b"\x01"
+
+    session._request = failed_config
+    with pytest.raises(type(error)):
         await session.query_circadian_settings()
+
+
+@pytest.mark.parametrize("flag", ["_broken", "_cipher_corrupted"])
+async def test_circadian_corrupted_cipher_failure_is_not_suppressed(flag: str) -> None:
+    session = SettingsSession()
+
+    async def failed_config(endpoint: str, **kwargs: Any) -> bytes:
+        if endpoint == "ac":
+            setattr(session, flag, True)
+            raise RuntimeError("cipher corrupted")
+        return b"\x00"
+
+    session._request = failed_config
+    with pytest.raises(RuntimeError, match="cipher corrupted"):
+        await session.query_circadian_settings()
+
+
+@pytest.mark.parametrize("model", ["NL45", "NL67"])
+async def test_circadian_legacy_whitepoint_readback_can_be_written_unchanged(model: str) -> None:
+    session = SettingsSession(model, "4.1.3")
+    stored = {**config(), "daylightTargetK": 6535}
+    await session.set_circadian_config(stored)
+    packet = session.calls[-1][1]
+    session.responses = {
+        ("ac/en", 0): b"\x00",
+        ("ac", 0): packet,
+    }
+    readback = (await session.query_circadian_settings())["config"]
+    assert readback["daylightTargetK"] == 6535
+    await session.set_circadian_config(readback)
+    assert session.calls[-1][1] == packet
+
+
+async def test_circadian_modern_whitepoint_is_clamped_to_model_maximum() -> None:
+    session = SettingsSession()
+    await session.set_circadian_config({**config(), "daylightTargetK": 6535})
+    assert b"\x06\x02\x00\x9a" in session.calls[-1][1]
 
 
 @pytest.mark.parametrize(

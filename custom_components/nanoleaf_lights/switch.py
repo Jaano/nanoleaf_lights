@@ -53,6 +53,7 @@ class NanoleafCircadianSwitch(NanoleafLtpduEntity, SwitchEntity):
         config = (data.get("circadian") or {}).get("config")
         values = (
             ("configuration", config),
+            ("configuration_error", (data.get("circadian") or {}).get("config_error")),
             ("clock", data.get("clock")),
             ("location", data.get("location")),
         )

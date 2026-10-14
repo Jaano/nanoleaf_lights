@@ -31,7 +31,7 @@ _TARGET_FIELDS = {
 _CIRCADIAN_FIELDS = {
     vol.Required("mode"): vol.In(("explicit", "sunrise_sunset")),
     **{
-        vol.Required(key): vol.All(vol.Coerce(int), vol.Range(min=1200, max=6500))
+        vol.Required(key): vol.All(vol.Coerce(int), vol.Range(min=1200, max=6535))
         for key in ("daylight_target_kelvin", "evening_target_kelvin", "morning_target_kelvin")
     },
     **{

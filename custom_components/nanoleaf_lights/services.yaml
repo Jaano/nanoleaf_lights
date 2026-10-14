@@ -20,7 +20,7 @@ set_circadian_config:
       selector:
         number:
           min: 1200
-          max: 6500
+          max: 6535
           step: 1
           unit_of_measurement: K
           mode: box
@@ -30,7 +30,7 @@ set_circadian_config:
       selector:
         number:
           min: 1200
-          max: 6500
+          max: 6535
           step: 1
           unit_of_measurement: K
           mode: box
@@ -40,7 +40,7 @@ set_circadian_config:
       selector:
         number:
           min: 1200
-          max: 6500
+          max: 6535
           step: 1
           unit_of_measurement: K
           mode: box

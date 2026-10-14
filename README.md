@@ -97,6 +97,8 @@ New firmware supplies scene names directly. For older firmware, names are resolv
 
 The integration polls light state every 5 seconds and optional settings every 60 seconds. Device info, scene lists, and motion capabilities are fetched after connecting. Session expiry triggers automatic re-authentication.
 
+Missing device metadata is retried during subsequent settings polls. Settings queries and writes run in sequence to preserve accepted values when controls and polling overlap.
+
 ### Circadian lighting and device settings
 
 Supported bulbs expose **Auto Circadian Lighting** and **Power Loss Recovery** configuration switches, a **Sync Circadian clock and location** button, and a **Motion capabilities** diagnostic sensor. Enable the diagnostic sensor in the entity settings to inspect its animations and parameter attributes. Availability depends on the bulb's model, firmware, and successful settings readback.
@@ -120,6 +122,8 @@ data:
 ```
 
 For `explicit` mode, replace the two offsets with `rise_time_minutes` and `fall_time_minutes` (0–1439). Saving a sunrise/sunset schedule and enabling Auto Circadian Lighting synchronize the bulb's clock, timezone offset, and location from Home Assistant. Enabling Auto Circadian Lighting also turns the bulb on. These writes happen only when you invoke a control; discovery and polling do not change settings. The switch attributes show the stored schedule, clock, and location.
+
+If the schedule cannot be read but the enabled flag is readable, the circadian switch and synchronization button stay available. The switch exposes the schedule-read error in its `configuration_error` attribute. Circadian white points support up to 6535 K on older Essentials bulbs and are clamped to the selected bulb's range when saving.
 
 `nanoleaf_lights.set_device_time` accepts optional `epoch_seconds` and `timezone_offset_seconds`; omitted values use the current time and Home Assistant's timezone at the selected date. `nanoleaf_lights.set_device_location` accepts `latitude` and `longitude`. Use the synchronization button after timezone or daylight-saving changes; the bulb stores a UTC offset rather than a timezone name. The synchronization button is available only when Auto Circadian Lighting is supported and its enabled state has been read successfully; it remains available when the feature is switched off.
 

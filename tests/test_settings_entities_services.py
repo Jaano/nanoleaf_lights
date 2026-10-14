@@ -385,6 +385,28 @@ async def test_sunrise_mode_requires_explicit_offsets_without_stored_defaults(se
 
 
 @pytest.mark.asyncio
+async def test_circadian_action_accepts_legacy_whitepoint(settings):
+    hass, registry, entries = harness(settings)
+    await settings.services.async_setup_services(hass)
+    data = {**explicit_config(), "daylight_target_kelvin": 6535}
+    await registry.invoke(hass, "set_circadian_config", {**data, "config_entry_id": "a"})
+    entries["a"].runtime_data.async_set_circadian_config.assert_awaited_once_with(data)
+
+
+def test_schedule_error_does_not_disable_circadian_or_sync(settings):
+    runtime = coordinator(
+        capabilities={"circadian": True, "time": True, "location": True},
+        circadian={"enabled": False, "config": None, "config_error": "read status 2"},
+    )
+    switch = settings.switch.NanoleafCircadianSwitch(runtime)
+    button = settings.button.NanoleafSyncClockLocationButton(runtime)
+    assert switch.available
+    assert not switch.is_on
+    assert switch.extra_state_attributes["configuration_error"] == "read status 2"
+    assert button.available
+
+
+@pytest.mark.asyncio
 async def test_optional_time_defaults_delegated_and_location_fields_forwarded(settings):
     hass, registry, entries = harness(settings)
     await settings.services.async_setup_services(hass)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -114,6 +115,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._scene_lookup: SceneLookup | None = None
         self._settings_updated_at = 0.0
+        self._settings_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Session helpers
@@ -150,14 +152,29 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pass
             self._session = None
 
-    async def _refresh_static_data(self) -> None:
-        """Query slow-changing device and Thread info once after a fresh session."""
+    async def _refresh_device_info(self) -> None:
+        """Refresh metadata and the optional feature profile."""
         assert self._session is not None
         try:
             device = await self._session.query_device_info(timeout=10.0)
         except Exception as exc:
             _LOGGER.warning("Could not fetch device info: %s", exc)
             device = {}
+        self.async_set_updated_data(
+            {
+                **(self.data or {}),
+                "device": device,
+                "capabilities": device_capabilities(
+                    device.get("model_number") or self.config_entry.data.get(CONF_MODEL),
+                    device.get("firmware_version"),
+                ),
+            }
+        )
+
+    async def _refresh_static_data(self) -> None:
+        """Query slow-changing device and Thread info once after a fresh session."""
+        assert self._session is not None
+        await self._refresh_device_info()
 
         thread: dict[str, Any] | None = None
         try:
@@ -194,22 +211,28 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_set_updated_data(
             {
                 **existing,
-                "device": device,
                 "thread": thread,
                 "scene_handles": scene_handles,
                 "scene_names": scene_names,
-                "capabilities": device_capabilities(
-                    device.get("model_number") or self.config_entry.data.get(CONF_MODEL),
-                    device.get("firmware_version"),
-                ),
             }
         )
 
     async def _refresh_settings(self, groups: set[str] | None = None) -> None:
+        """Serialize settings reads with settings actions."""
+        async with self._settings_lock:
+            device = (self.data or {}).get("device") or {}
+            if self._settings_updated_at and (
+                not device.get("firmware_version")
+                or not (device.get("model_number") or self.config_entry.data.get(CONF_MODEL))
+            ):
+                await self._refresh_device_info()
+            await self._read_settings(groups)
+
+    async def _read_settings(self, groups: set[str] | None = None) -> None:
         """Read supported settings without making unavailable options look disabled."""
         assert self._session is not None
-        values = dict(self.data or {})
-        capabilities = values.get("capabilities", {})
+        values: dict[str, Any] = {}
+        capabilities = (self.data or {}).get("capabilities", {})
         queries = {
             "circadian": ("circadian", "query_circadian_settings"),
             "clock": ("time", "query_device_time"),
@@ -227,19 +250,21 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 value = await getattr(self._session, method)(timeout=10.0)
                 if key == "circadian" and value.get("config") is not None:
                     value = {**value, "config": _circadian_config(value["config"], to_device=False)}
+                if key == "circadian" and value.get("config_error"):
+                    _LOGGER.debug("Circadian configuration read failed: %s", value["config_error"])
                 values[key] = value
-            except SessionExpiredError, TimeoutError, OSError:
+            except (SessionExpiredError, TimeoutError, OSError):
                 # Stop after transport failure; a fresh session will retry these reads.
-                self.async_set_updated_data(values)
+                self.async_set_updated_data({**(self.data or {}), **values})
                 raise
             except Exception as exc:
                 if getattr(self._session, "_cipher_corrupted", False) or getattr(
                     self._session, "_broken", False
                 ):
-                    self.async_set_updated_data(values)
+                    self.async_set_updated_data({**(self.data or {}), **values})
                     raise ConnectionError("Settings exchange invalidated the session") from exc
                 _LOGGER.debug("Could not read %s: %s", key, exc)
-        self.async_set_updated_data(values)
+        self.async_set_updated_data({**(self.data or {}), **values})
 
     # ------------------------------------------------------------------
     # Poll loop
@@ -293,7 +318,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if monotonic() - self._settings_updated_at >= _SETTINGS_INTERVAL:
             groups = {"circadian", "clock", "location", "power_loss_recovery"}
-            if not self._settings_updated_at or "motion_capabilities" not in (self.data or {}):
+            if (self.data or {}).get("motion_capabilities") is None:
                 groups.add("motion_capabilities")
             try:
                 await self._refresh_settings(groups)
@@ -354,9 +379,10 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         async def update(session: Session) -> None:
             await action(session)
-            await self._refresh_settings(groups)
+            await self._read_settings(groups)
 
-        await self.async_service_call(update)
+        async with self._settings_lock:
+            await self.async_service_call(update)
         await self.async_request_refresh()
 
     def _clock_values(
@@ -464,8 +490,9 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             nonlocal result
             result = await session.query_motion_capabilities()
 
-        await self.async_service_call(query)
-        self.async_set_updated_data({**(self.data or {}), "motion_capabilities": result})
+        async with self._settings_lock:
+            await self.async_service_call(query)
+            self.async_set_updated_data({**(self.data or {}), "motion_capabilities": result})
         return result
 
     async def async_reload_scenes(self) -> None:
