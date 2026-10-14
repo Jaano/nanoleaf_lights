@@ -1711,9 +1711,7 @@ class LtpduSession:
             raise RuntimeError(
                 f"query_thread_capabilities returned status 0x{status:02x}"
             )
-        if not val:
-            raise RuntimeError("query_thread_capabilities: empty value")
-        caps = val[0]
+        caps = _settings_module().decode_thread_number(val, "Thread capabilities")
         return {
             "raw": caps,
             "minimal": bool(caps & 0x01),
@@ -1747,13 +1745,11 @@ class LtpduSession:
         status, val = await self._read_0801(b"th/tr", timeout)
         if status != 0x00:
             raise RuntimeError(f"query_thread_role returned status 0x{status:02x}")
-        if not val:
-            raise RuntimeError("query_thread_role: empty value")
-        role = val[0]
+        role = _settings_module().decode_thread_number(val, "Thread role")
         return _settings_module().decode_thread_role(role, self._model)
 
     async def query_thread_network_info(self, timeout: float = 10.0) -> dict[str, Any]:
-        """Read Thread Operational Dataset via ``th/ds``.
+        """Read model-specific Thread network information.
 
         On Matter devices (NL67) the Thread network info is exposed at
         ``th/ds`` (MatterThreadControl). Non-Matter devices use ``th/tc``
@@ -1768,15 +1764,15 @@ class LtpduSession:
         - 0x03: Network Name - up to 16-byte ASCII
         - 0x04: PSKc - 16 bytes
         - 0x05: Network Key (master key) - 16 bytes
-        - 0x06: Mesh Local Prefix - 8-byte IPv6 prefix (may be absent)
-        - 0x07: Mesh Local Prefix - 8-byte IPv6 prefix (OpenThread tag variant)
-        - 0x07: Steering Data
+        - 0x06: Network Key Sequence - 4 bytes
+        - 0x07: Mesh Local Prefix - 8-byte IPv6 prefix (may be absent)
         - 0x0c: Security Policy - 4 bytes
         - 0x0e: Channel Mask - 8 bytes
         - 0x35: Active Timestamp - 8 bytes
 
-        The response outer TLV contains a 2-byte big-endian status followed
-        by the raw TDS bytes (no extra nesting).
+        HomeKit ``th/tc`` returns TLV8 type 2 containing network name (1),
+        little-endian channel (2), little-endian PAN ID (3), extended PAN ID
+        (4), and network key (5). Mesh prefix and PSKc are absent.
 
         Returns:
             Dict with keys: ``status``, ``raw_tds``, ``network_name``,
@@ -1786,7 +1782,8 @@ class LtpduSession:
         Raises:
             RuntimeError on CoAP error, timeout, or unparseable response.
         """
-        status, val = await self._read_0801(b"th/ds", timeout)
+        endpoint = _settings_module().thread_network_endpoint(self._model)
+        status, val = await self._read_0801(endpoint.encode(), timeout)
         if status != 0x00:
             return {
                 "status": status,
@@ -1799,23 +1796,7 @@ class LtpduSession:
                 "mesh_local_prefix": None,
                 "pskc": None,
             }
-        # val is the raw Thread Operational Dataset (MeshCoP TLV: 1B type + 1B len + value)
-        fields = _parse_tlv8(val)
-        channel = None
-        if 0x00 in fields and len(fields[0x00]) >= 3:
-            channel = int.from_bytes(fields[0x00][1:3], "big")
-        return {
-            "status": status,
-            "raw_tds": val,
-            "network_name": fields.get(0x03, b"").decode("ascii", errors="replace")
-            or None,
-            "channel": channel,
-            "pan_id": fields.get(0x01, b"").hex() or None,
-            "extended_pan_id": fields.get(0x02, b"").hex() or None,
-            "network_key": fields.get(0x05, b"").hex() or None,
-            "mesh_local_prefix": fields.get(0x07, b"").hex() or None,
-            "pskc": fields.get(0x04, b"").hex() or None,
-        }
+        return _settings_module().decode_thread_network(val, endpoint)
 
     async def identify(self, timeout: float = 10.0) -> None:
         """Trigger the device to blink for physical identification.

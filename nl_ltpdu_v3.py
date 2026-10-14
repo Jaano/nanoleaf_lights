@@ -399,6 +399,63 @@ _WIFI_MODELS = {
 }
 
 
+def decode_thread_number(data: bytes, label: str) -> int:
+    """Read byte-sized Thread values carried as one-, two-, or four-byte integers."""
+    value = _uint(data, label)
+    if len(data) not in (1, 2, 4) or value > 255:
+        raise RuntimeError(f"Invalid {label} integer encoding")
+    return value
+
+
+def thread_network_endpoint(model: str | None) -> str:
+    """Select HomeKit credentials or a Matter operational dataset."""
+    return "th/tc" if (model or "").upper() in _HOMEKIT_MODELS else "th/ds"
+
+
+def decode_thread_network(data: bytes, endpoint: str) -> dict[str, Any]:
+    """Parse HomeKit's nested TLV8 credentials and Matter MeshCoP datasets."""
+    if not data:
+        raise RuntimeError("Empty Thread network response")
+    entries = _fields(data, length_size=1)
+    homekit = endpoint == "th/tc" and len(entries) == 1 and entries[0][0] == 2
+    fields = dict(_fields(entries[0][1], length_size=1)) if homekit else dict(entries)
+    if homekit:
+        channel = fields.get(2, b"")
+        if channel and len(channel) not in (1, 2):
+            raise RuntimeError("Invalid HomeKit Thread channel length")
+        pan_id = fields.get(3, b"")
+        if pan_id and len(pan_id) != 2:
+            raise RuntimeError("Invalid HomeKit Thread PAN ID length")
+        return {
+            "status": 0,
+            "raw_tds": data,
+            "network_name": _text(fields.get(1, b"")) or None,
+            "channel": int.from_bytes(channel, "little") if channel else None,
+            "pan_id": pan_id[::-1].hex() or None,
+            "extended_pan_id": fields.get(4, b"").hex() or None,
+            "network_key": fields.get(5, b"").hex() or None,
+            "mesh_local_prefix": None,
+            "pskc": None,
+        }
+    channel = fields.get(0, b"")
+    if endpoint == "th/tc" and (len(channel) != 3 or not fields.get(3)):
+        raise RuntimeError("Invalid HomeKit Thread network response")
+    prefix = fields.get(7, b"")
+    if not prefix and len(fields.get(6, b"")) == 8:
+        prefix = fields[6]
+    return {
+        "status": 0,
+        "raw_tds": data,
+        "network_name": _text(fields.get(3, b"")) or None,
+        "channel": int.from_bytes(channel[1:3], "big") if len(channel) >= 3 else None,
+        "pan_id": fields.get(1, b"").hex() or None,
+        "extended_pan_id": fields.get(2, b"").hex() or None,
+        "network_key": fields.get(5, b"").hex() or None,
+        "mesh_local_prefix": prefix.hex() or None,
+        "pskc": fields.get(4, b"").hex() or None,
+    }
+
+
 def decode_thread_role(value: int, model: str | None) -> dict[str, Any]:
     """Decode Matter role enums and HomeKit role bitfields."""
     flags = ("disabled", "detached", "joining", "child", "router", "leader", "border_router")
@@ -1050,7 +1107,7 @@ class V3Controls:
     async def _thread_flags(
         self, endpoint: str, flags: tuple[str, ...], timeout: float
     ) -> dict[str, Any]:
-        value = _uint(await self._request(endpoint, timeout=timeout), endpoint, 1)
+        value = decode_thread_number(await self._request(endpoint, timeout=timeout), endpoint)
         return {"raw": value, **{name: bool(value & (1 << bit)) for bit, name in enumerate(flags)}}
 
     async def query_thread_capabilities(self, timeout: float = 10.0) -> dict[str, Any]:
@@ -1061,24 +1118,13 @@ class V3Controls:
         )
 
     async def query_thread_role(self, timeout: float = 10.0) -> dict[str, Any]:
-        value = _uint(await self._request("th/tr", timeout=timeout), "th/tr", 1)
+        value = decode_thread_number(await self._request("th/tr", timeout=timeout), "th/tr")
         return decode_thread_role(value, getattr(self, "_model", None))
 
     async def query_thread_network_info(self, timeout: float = 10.0) -> dict[str, Any]:
-        raw = await self._request("th/ds", timeout=timeout)
-        fields = dict(_fields(raw, length_size=1))
-        channel = fields.get(0, b"")
-        return {
-            "status": 0,
-            "raw_tds": raw,
-            "network_name": _text(fields.get(3, b"")) or None,
-            "channel": int.from_bytes(channel[1:3], "big") if len(channel) >= 3 else None,
-            "pan_id": fields.get(1, b"").hex() or None,
-            "extended_pan_id": fields.get(2, b"").hex() or None,
-            "network_key": fields.get(5, b"").hex() or None,
-            "mesh_local_prefix": fields.get(7, fields.get(6, b"")).hex() or None,
-            "pskc": fields.get(4, b"").hex() or None,
-        }
+        endpoint = thread_network_endpoint(getattr(self, "_model", None))
+        raw = await self._request(endpoint, timeout=timeout)
+        return decode_thread_network(raw, endpoint)
 
 
 # UDP transport and authenticated session.

@@ -287,3 +287,69 @@ async def test_matter_thread_role_is_enum(value: int, expected: str) -> None:
     role = await session.query_thread_role()
     assert role["raw"] == value
     assert [key for key, active in role.items() if key != "raw" and active] == [expected]
+
+
+@pytest.mark.parametrize("width", [1, 2, 4])
+async def test_thread_flags_accept_padded_integers(width: int) -> None:
+    session = FakeSession(
+        {"th/nc": (12).to_bytes(width, "big"), "th/tr": (3).to_bytes(width, "big")}
+    )
+    session._model = "NL67"
+    assert (await session.query_thread_capabilities())["raw"] == 12
+    assert (await session.query_thread_role())["router"]
+
+
+@pytest.mark.parametrize(
+    "value", [b"", b"\x00\x00\x0c", b"\x01\x00", b"\xff\xff\xff\xff"]
+)
+async def test_thread_flags_reject_invalid_or_oversized_values(value: bytes) -> None:
+    session = FakeSession({"th/nc": value, "th/tr": value})
+    with pytest.raises(RuntimeError, match="Invalid"):
+        await session.query_thread_capabilities()
+    with pytest.raises(RuntimeError, match="Invalid"):
+        await session.query_thread_role()
+
+
+async def test_homekit_network_uses_nested_credentials_and_little_endian_fields() -> None:
+    raw = bytes.fromhex("020e0104486f6d65020219000302319c")
+    session = FakeSession({"th/tc": raw})
+    session._model = "NL45"
+    network = await session.query_thread_network_info()
+    assert network["network_name"] == "Home"
+    assert network["channel"] == 25
+    assert network["pan_id"] == "9c31"
+    assert network["mesh_local_prefix"] is None
+    assert session.requests[0][0] == "th/tc"
+
+
+async def test_homekit_endpoint_can_return_openthread_dataset() -> None:
+    session = FakeSession({"th/tc": bytes.fromhex("000300001901029c310304486f6d65")})
+    session._model = "NL45"
+    network = await session.query_thread_network_info()
+    assert network["channel"] == 25 and network["network_name"] == "Home"
+
+
+async def test_dataset_key_sequence_is_not_reported_as_mesh_prefix() -> None:
+    session = FakeSession({"th/ds": bytes.fromhex("00030000190304486f6d65060400000001")})
+    session._model = "NL67"
+    network = await session.query_thread_network_info()
+    assert network["channel"] == 25
+    assert network["mesh_local_prefix"] is None
+
+
+@pytest.mark.parametrize("raw", [b"", b"\x02", b"\x02\x03\x01\x02A"])
+async def test_homekit_network_rejects_truncated_credentials(raw: bytes) -> None:
+    session = FakeSession({"th/tc": raw})
+    session._model = "NL45"
+    with pytest.raises(RuntimeError, match=r"Empty|Truncated"):
+        await session.query_thread_network_info()
+
+
+@pytest.mark.parametrize(
+    "raw", [bytes.fromhex(value) for value in ("010102", "02050203000019", "0203030100")]
+)
+async def test_homekit_network_rejects_acknowledgement_and_malformed_numbers(raw: bytes) -> None:
+    session = FakeSession({"th/tc": raw})
+    session._model = "NL45"
+    with pytest.raises(RuntimeError, match="Invalid HomeKit Thread"):
+        await session.query_thread_network_info()

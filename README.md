@@ -104,6 +104,8 @@ Thread capabilities, role, and network information are read independently. A rej
 
 Thread roles use Matter's enum encoding on Matter bulbs and the bitfield encoding on older HomeKit bulbs. For example, a Matter role value of `3` is displayed as `router`.
 
+HomeKit bulbs use `th/tc` for network information; Matter bulbs use `th/ds`. Thread capabilities and roles accept padded numeric values. HomeKit credentials do not include a mesh prefix, so that sensor remains unavailable when no prefix is returned.
+
 ### Circadian lighting and device settings
 
 Supported bulbs expose **Auto Circadian Lighting** and **Power Loss Recovery** configuration switches, a **Sync Circadian clock and location** button, and a **Supported animations** diagnostic sensor. Enable the diagnostic sensor in the entity settings to inspect its animations and parameter attributes. Availability depends on the bulb's model, firmware, and successful settings readback.

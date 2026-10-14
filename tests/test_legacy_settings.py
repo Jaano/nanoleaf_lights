@@ -127,6 +127,61 @@ async def test_legacy_thread_role_uses_model_specific_encoding(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("width", [1, 2, 4])
+async def test_homekit_thread_numbers_preserve_logged_value_after_leading_zeroes(
+    width: int,
+) -> None:
+    session = make_session("NL45")
+    session.get_ltpdu.side_effect = [
+        response("th/nc", (12).to_bytes(width, "big")),
+        response("th/tr", (16).to_bytes(width, "big")),
+    ]
+    caps = await session.query_thread_capabilities()
+    role = await session.query_thread_role()
+    assert caps["raw"] == 12
+    assert caps["full"] and caps["router_eligible"]
+    assert not caps["minimal"] and not caps["sleepy"]
+    assert role["raw"] == 16 and role["router"] and not role["disabled"]
+
+
+@pytest.mark.asyncio
+async def test_homekit_network_selects_legacy_endpoint_and_decodes_nested_tlv8() -> None:
+    session = make_session("NL45")
+    raw = bytes.fromhex(
+        "022a0104486f6d65020219000302319c04085059b0077aed49a3"
+        "0510000102030405060708090a0b0c0d0e0f"
+    )
+    session.get_ltpdu.return_value = response("th/tc", raw)
+    network = await session.query_thread_network_info()
+    assert network["network_name"] == "Home"
+    assert network["channel"] == 25
+    assert network["pan_id"] == "9c31"
+    assert network["extended_pan_id"] == "5059b0077aed49a3"
+    assert network["network_key"] == "000102030405060708090a0b0c0d0e0f"
+    assert network["mesh_local_prefix"] is None
+    assert network["pskc"] is None
+    session.get_ltpdu.assert_awaited_once_with(
+        _create_tlv(1, b"th/tc") + _create_tlv(2, b""), timeout=10.0
+    )
+    session.send_ltpdu.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_matter_network_keeps_dataset_endpoint() -> None:
+    session = make_session("NL67")
+    raw = bytes.fromhex("000300001901029c310304486f6d650708fd465a23f008e644")
+    session.get_ltpdu.return_value = response("th/ds", raw)
+    network = await session.query_thread_network_info()
+    assert network["channel"] == 25
+    assert network["network_name"] == "Home"
+    assert network["pan_id"] == "9c31"
+    assert network["mesh_local_prefix"] == "fd465a23f008e644"
+    session.get_ltpdu.assert_awaited_once_with(
+        _create_tlv(1, b"th/ds") + _create_tlv(2, b""), timeout=10.0
+    )
+
+
+@pytest.mark.asyncio
 async def test_shared_clock_settings_use_legacy_get_and_post() -> None:
     session = make_session()
     epoch, zone = 1_800_000_000, -18_000

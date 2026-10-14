@@ -269,10 +269,16 @@ NL45 uses a fixed flat layout: 10 B hw + 8 B fw (ASCII) + 11 B serial + 8 B EUI-
 
 | Endpoint | Description |
 |---|---|
-| `th/nc` | Node capabilities (1-byte bitfield) |
-| `th/tr` | Thread role (1-byte enum on Matter, bitfield on HomeKit) |
+| `th/nc` | Node capabilities (bitfield, integer encoded in 1, 2, or 4 bytes) |
+| `th/tr` | Thread role (enum on Matter, bitfield on HomeKit; 1, 2, or 4 bytes) |
 | `th/ds` | Active Operational Dataset (MeshCoP TLV, NL67/Matter) |
 | `th/tc` | Thread network info TLV8 (legacy devices) |
+
+`th/tc` HomeKit credentials use an outer TLV8 type `2` with nested fields:
+`1` network name, `2` channel (little-endian integer), `3` PAN ID
+(little-endian), `4` extended PAN ID, and `5` network key. This layout has no
+mesh prefix or PSKc. An OpenThread dataset returned by the same endpoint uses
+the MeshCoP layout instead.
 
 **`th/nc`  -  node capabilities bitfield:**
 
