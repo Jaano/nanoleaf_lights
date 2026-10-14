@@ -10,6 +10,7 @@ import json
 import sys
 import types
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,9 +67,12 @@ def settings(monkeypatch):
     @dataclass(frozen=True)
     class Description:
         key: str
-        name: str
-        icon: str
-        entity_category: str
+        name: str | None = None
+        icon: str | None = None
+        entity_category: str | None = None
+        translation_key: str | None = None
+        device_class: str | None = None
+        native_unit_of_measurement: str | None = None
 
     extractor = AsyncMock(side_effect=lambda call: call.target_entries)
     register("homeassistant")
@@ -102,6 +106,7 @@ def settings(monkeypatch):
         "homeassistant.components.sensor",
         SensorEntity=type("SensorEntity", (), {}),
         SensorEntityDescription=Description,
+        SensorDeviceClass=SimpleNamespace(TIMESTAMP="timestamp"),
     )
     register(f"{package.__name__}.coordinator", NanoleafLtpduCoordinator=object)
     register(f"{package.__name__}.entity", NanoleafLtpduEntity=BaseEntity)
@@ -243,14 +248,137 @@ def test_sync_button_unavailable_without_circadian_support_or_readback(
     runtime.async_sync_clock_and_location.assert_not_awaited()
 
 
-def test_motion_sensor_exposes_count_and_complete_parsed_options(settings):
+@pytest.mark.asyncio
+async def test_circadian_diagnostics_register_disabled_and_use_bulb_readbacks(settings):
+    runtime = coordinator(
+        capabilities={"time": True, "location": True},
+        circadian={"enabled": False},
+        clock={"epoch_seconds": 1791968002, "timezone_offset_seconds": 10800},
+        location={"latitude": 59.437, "longitude": 24.527},
+    )
+    entities = []
+    await settings.sensor.async_setup_entry(
+        SimpleNamespace(), SimpleNamespace(runtime_data=runtime), entities.extend
+    )
+    sensors = {
+        sensor.entity_description.key: sensor
+        for sensor in entities
+        if getattr(sensor, "entity_description", None)
+        and sensor.entity_description.key.startswith("circadian_")
+    }
+    assert set(sensors) == {
+        "circadian_clock", "circadian_timezone_offset", "circadian_latitude", "circadian_longitude"
+    }
+    assert sensors["circadian_clock"].native_value == datetime(2026, 10, 14, 8, 53, 22, tzinfo=UTC)
+    assert sensors["circadian_clock"].entity_description.device_class == "timestamp"
+    assert sensors["circadian_timezone_offset"].native_value == "UTC+03:00"
+    assert sensors["circadian_latitude"].native_value == 59.437
+    assert sensors["circadian_longitude"].native_value == 24.527
+    for sensor in sensors.values():
+        assert sensor.available
+        assert not sensor._attr_entity_registry_enabled_default
+        assert sensor.entity_description.entity_category == "diagnostic"
+        assert sensor._attr_unique_id == f"device-e20-{sensor.entity_description.key}"
+    runtime.data["clock"]["epoch_seconds"] += 60
+    assert sensors["circadian_clock"].native_value == datetime(2026, 10, 14, 8, 54, 22, tzinfo=UTC)
+    runtime.async_set_device_time.assert_not_awaited()
+    runtime.async_set_device_location.assert_not_awaited()
+    runtime.async_sync_clock_and_location.assert_not_awaited()
+
+
+def test_thread_sensors_expose_partial_readbacks_and_unavailable_failed_groups(settings):
+    runtime = coordinator(
+        thread={"network_name": "Home", "channel": 0, "child": True, "pan_id": None},
+        thread_readbacks={"capabilities": None, "role": {"child": True}, "network": {"status": 0}},
+    )
+    sensors = {
+        description.key: settings.sensor.NanoleafDiagnosticSensor(runtime, description)
+        for description in settings.sensor._THREAD_SENSORS
+    }
+    assert sensors["thread_network_name"].available
+    assert sensors["thread_network_name"].native_value == "Home"
+    assert sensors["thread_channel"].available
+    assert sensors["thread_channel"].native_value == 0
+    assert sensors["thread_role"].available
+    assert sensors["thread_role"].native_value == "child"
+    assert not sensors["thread_capabilities"].available
+    assert not sensors["thread_pan_id"].available
+    runtime.data["thread_readbacks"]["capabilities"] = {"full": True}
+    runtime.data["thread"]["full"] = True
+    assert sensors["thread_capabilities"].available
+    runtime.last_update_success = False
+    assert all(not sensor.available for sensor in sensors.values())
+    runtime.last_update_success = True
+    runtime.data = {"thread": None}
+    assert all(not sensor.available for sensor in sensors.values())
+
+
+@pytest.mark.parametrize("epoch", [0, None, 2**64 - 1])
+def test_circadian_clock_unset_or_out_of_range_is_unknown(settings, epoch):
+    runtime = coordinator(capabilities={"time": True}, clock={"epoch_seconds": epoch})
+    description = settings.sensor._CIRCADIAN_SENSORS[0]
+    sensor = settings.sensor.NanoleafDiagnosticSensor(runtime, description)
+    assert sensor.available
+    assert sensor.native_value is None
+
+
+@pytest.mark.parametrize(
+    "offset,expected", [(0, "UTC+00:00"), (-12600, "UTC-03:30"), (20701, "UTC+05:45:01")]
+)
+def test_circadian_diagnostics_preserve_zero_coordinates_and_signed_timezone(
+    settings, offset, expected
+):
+    runtime = coordinator(
+        capabilities={"time": True, "location": True},
+        clock={"timezone_offset_seconds": offset},
+        location={"latitude": 0.0, "longitude": -24.527},
+    )
+    values = {
+        description.key: settings.sensor.NanoleafDiagnosticSensor(runtime, description).native_value
+        for description in settings.sensor._CIRCADIAN_SENSORS
+    }
+    assert values["circadian_timezone_offset"] == expected
+    assert values["circadian_latitude"] == 0.0
+    assert values["circadian_longitude"] == -24.527
+
+
+def test_circadian_diagnostics_gate_each_readback_independently(settings):
+    runtime = coordinator(
+        capabilities={"time": True, "location": False},
+        clock={"epoch_seconds": 1, "timezone_offset_seconds": 0},
+        location={"latitude": 0, "longitude": 0},
+    )
+    sensors = {
+        description.key: settings.sensor.NanoleafDiagnosticSensor(runtime, description)
+        for description in settings.sensor._CIRCADIAN_SENSORS
+    }
+    assert sensors["circadian_clock"].available
+    assert not sensors["circadian_latitude"].available
+    runtime.data["capabilities"]["location"] = True
+    assert sensors["circadian_latitude"].available
+    runtime.data["clock"] = None
+    assert not sensors["circadian_clock"].available
+    assert not sensors["circadian_timezone_offset"].available
+    assert sensors["circadian_longitude"].available
+    runtime.data["location"] = None
+    assert not sensors["circadian_latitude"].available
+    assert sensors["circadian_latitude"].native_value is None
+    runtime.last_update_success = False
+    assert all(not sensor.available for sensor in sensors.values())
+    runtime.data = None
+    assert all(sensor.native_value is None for sensor in sensors.values())
+
+
+def test_motion_sensor_explains_supported_animations_and_preserves_options(settings):
     capabilities = {
         "motions": [
             {
                 "id": 65536,
                 "name": "fade",
                 "options": [{"name": "transTime", "minimum": 1, "maximum": 600}],
-            }
+            },
+            {"name": "highlight", "options": []},
+            {"name": "random", "options": []},
         ],
         "palette_types": ["HSV"],
         "max_palette_size": 7,
@@ -260,11 +388,33 @@ def test_motion_sensor_exposes_count_and_complete_parsed_options(settings):
     runtime = coordinator(capabilities={"motions": True}, motion_capabilities=capabilities)
     sensor = settings.sensor.NanoleafMotionCapabilitiesSensor(runtime)
     assert sensor.available
-    assert sensor.native_value == 1
+    assert sensor.native_value == "Fade, Highlight, Random"
     assert sensor.extra_state_attributes == capabilities
     runtime.data["motion_capabilities"] = None
     assert sensor.native_value is None
     assert not sensor.available
+
+
+def test_motion_sensor_explains_empty_list(settings):
+    runtime = coordinator(capabilities={"motions": True}, motion_capabilities={"motions": []})
+    sensor = settings.sensor.NanoleafMotionCapabilitiesSensor(runtime)
+    assert sensor.available
+    assert sensor.native_value == "No supported animations"
+
+
+def test_motion_sensor_long_list_keeps_full_details_in_attributes(settings):
+    capabilities = {
+        "motions": [
+            {"name": f"Motion 0x{identifier:08x}", "id": identifier, "options": []}
+            for identifier in range(100)
+        ]
+    }
+    runtime = coordinator(capabilities={"motions": True}, motion_capabilities=capabilities)
+    sensor = settings.sensor.NanoleafMotionCapabilitiesSensor(runtime)
+    assert sensor.available
+    assert sensor.native_value == "Supports many animations; see attributes for the full list"
+    assert len(sensor.native_value) <= 255
+    assert sensor.extra_state_attributes == capabilities
 
 
 class Registry:

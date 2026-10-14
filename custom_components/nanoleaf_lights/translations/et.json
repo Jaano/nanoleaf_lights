@@ -85,7 +85,19 @@
     },
     "sensor": {
       "motion_capabilities": {
-        "name": "Animatsioonide võimalused"
+        "name": "Toetatud animatsioonid"
+      },
+      "circadian_clock": {
+        "name": "Ööpäevavalgustuse kell"
+      },
+      "circadian_timezone_offset": {
+        "name": "Ööpäevavalgustuse ajavööndi nihe"
+      },
+      "circadian_latitude": {
+        "name": "Ööpäevavalgustuse laiuskraad"
+      },
+      "circadian_longitude": {
+        "name": "Ööpäevavalgustuse pikkuskraad"
       }
     }
   },

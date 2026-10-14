@@ -276,3 +276,14 @@ async def test_thread_dataset_and_flags() -> None:
     assert network["pan_id"] == "1234"
     assert network["network_name"] == "Test"
     assert network["mesh_local_prefix"] == "fd05000000000000"
+
+
+@pytest.mark.parametrize(
+    "value,expected", list(enumerate(["disabled", "detached", "child", "router", "leader"]))
+)
+async def test_matter_thread_role_is_enum(value: int, expected: str) -> None:
+    session = FakeSession({"th/tr": bytes([value])})
+    session._model = "NL67"
+    role = await session.query_thread_role()
+    assert role["raw"] == value
+    assert [key for key, active in role.items() if key != "raw" and active] == [expected]

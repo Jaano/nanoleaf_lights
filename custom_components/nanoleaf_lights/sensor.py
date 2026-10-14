@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -23,6 +24,9 @@ class NanoleafSensorDescription(SensorEntityDescription):
     """Extends SensorEntityDescription with a data accessor."""
 
     value_fn: Callable[[dict[str, Any]], Any] = lambda _: None
+    capability: str | None = None
+    readback_key: str | None = None
+    thread_group: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +34,69 @@ class NanoleafSensorDescription(SensorEntityDescription):
 # ---------------------------------------------------------------------------
 
 _DEVICE_SENSORS: tuple[NanoleafSensorDescription, ...] = ()
+
+
+def _circadian_clock(data: dict[str, Any]) -> datetime | None:
+    epoch = (data.get("clock") or {}).get("epoch_seconds")
+    if not epoch:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch, UTC)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _circadian_timezone(data: dict[str, Any]) -> str | None:
+    offset = (data.get("clock") or {}).get("timezone_offset_seconds")
+    if offset is None:
+        return None
+    hours, remainder = divmod(abs(offset), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    value = f"UTC{'+' if offset >= 0 else '-'}{hours:02d}:{minutes:02d}"
+    return f"{value}:{seconds:02d}" if seconds else value
+
+
+_CIRCADIAN_SENSORS: tuple[NanoleafSensorDescription, ...] = (
+    NanoleafSensorDescription(
+        key="circadian_clock",
+        translation_key="circadian_clock",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-outline",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        capability="time",
+        readback_key="clock",
+        value_fn=_circadian_clock,
+    ),
+    NanoleafSensorDescription(
+        key="circadian_timezone_offset",
+        translation_key="circadian_timezone_offset",
+        icon="mdi:map-clock-outline",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        capability="time",
+        readback_key="clock",
+        value_fn=_circadian_timezone,
+    ),
+    NanoleafSensorDescription(
+        key="circadian_latitude",
+        translation_key="circadian_latitude",
+        icon="mdi:latitude",
+        native_unit_of_measurement="°",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        capability="location",
+        readback_key="location",
+        value_fn=lambda data: (data.get("location") or {}).get("latitude"),
+    ),
+    NanoleafSensorDescription(
+        key="circadian_longitude",
+        translation_key="circadian_longitude",
+        icon="mdi:longitude",
+        native_unit_of_measurement="°",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        capability="location",
+        readback_key="location",
+        value_fn=lambda data: (data.get("location") or {}).get("longitude"),
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Thread helper functions (must be defined before _THREAD_SENSORS)
@@ -81,6 +148,7 @@ def _get_thread(data: dict[str, Any]) -> dict[str, Any]:
 _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     NanoleafSensorDescription(
         key="thread_network_name",
+        thread_group="network",
         name="Thread Network Name",
         icon="mdi:thread",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -88,6 +156,7 @@ _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     ),
     NanoleafSensorDescription(
         key="thread_channel",
+        thread_group="network",
         name="Thread Channel",
         icon="mdi:radio-tower",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -95,6 +164,7 @@ _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     ),
     NanoleafSensorDescription(
         key="thread_pan_id",
+        thread_group="network",
         name="Thread PAN ID",
         icon="mdi:identifier",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -102,6 +172,7 @@ _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     ),
     NanoleafSensorDescription(
         key="thread_extended_pan_id",
+        thread_group="network",
         name="Thread Extended PAN ID",
         icon="mdi:identifier",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -109,6 +180,7 @@ _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     ),
     NanoleafSensorDescription(
         key="thread_mesh_prefix",
+        thread_group="network",
         name="Thread Mesh Prefix",
         icon="mdi:network",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -116,6 +188,7 @@ _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     ),
     NanoleafSensorDescription(
         key="thread_role",
+        thread_group="role",
         name="Thread Role",
         icon="mdi:thread",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -123,6 +196,7 @@ _THREAD_SENSORS: tuple[NanoleafSensorDescription, ...] = (
     ),
     NanoleafSensorDescription(
         key="thread_capabilities",
+        thread_group="capabilities",
         name="Thread Capabilities",
         icon="mdi:thread",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -140,7 +214,7 @@ async def async_setup_entry(
     coordinator: NanoleafLtpduCoordinator = entry.runtime_data
     entities: list[SensorEntity] = []
 
-    for description in (*_DEVICE_SENSORS, *_THREAD_SENSORS):
+    for description in (*_DEVICE_SENSORS, *_THREAD_SENSORS, *_CIRCADIAN_SENSORS):
         entities.append(NanoleafDiagnosticSensor(coordinator, description))
 
     entities.append(NanoleafMotionCapabilitiesSensor(coordinator))
@@ -168,6 +242,24 @@ class NanoleafDiagnosticSensor(NanoleafLtpduEntity, SensorEntity):  # type: igno
     def native_value(self) -> Any:  # type: ignore[override]
         return self.entity_description.value_fn(self.coordinator.data or {})
 
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        description = self.entity_description
+        if description.thread_group is not None:
+            return (
+                super().available
+                and (data.get("thread_readbacks") or {}).get(description.thread_group) is not None
+                and self.native_value is not None
+            )
+        if description.capability is None:
+            return super().available
+        return (
+            super().available
+            and bool((data.get("capabilities") or {}).get(description.capability))
+            and data.get(description.readback_key) is not None
+        )
+
 
 class NanoleafMotionCapabilitiesSensor(NanoleafLtpduEntity, SensorEntity):
     """Report the motions/options supported by this device."""
@@ -182,11 +274,18 @@ class NanoleafMotionCapabilitiesSensor(NanoleafLtpduEntity, SensorEntity):
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}-motion-capabilities"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> str | None:
         capabilities = (self.coordinator.data or {}).get("motion_capabilities")
         if capabilities is None:
             return None
-        return len(capabilities.get("motions", []))
+        motions = capabilities.get("motions", [])
+        if not motions:
+            return "No supported animations"
+        names = [motion.get("name") or "Unknown animation" for motion in motions]
+        description = ", ".join(name[:1].upper() + name[1:] for name in names)
+        if len(description) > 255:
+            return "Supports many animations; see attributes for the full list"
+        return description
 
     @property
     def available(self) -> bool:

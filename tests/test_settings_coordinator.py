@@ -27,6 +27,7 @@ def settings(ha_modules):
     coordinator.config_entry = SimpleNamespace(data={"model": "NL67"})
     coordinator.connected = True
     coordinator._settings_updated_at = 0.0
+    coordinator._thread_updated_at = 0.0
     coordinator._settings_lock = asyncio.Lock()
     coordinator._scene_lookup = object()
     coordinator.data = {
@@ -48,9 +49,9 @@ def settings(ha_modules):
                 "firmware_version": "5.1.45",
             }
         ),
-        query_thread_capabilities=AsyncMock(return_value={}),
-        query_thread_role=AsyncMock(return_value={}),
-        query_thread_network_info=AsyncMock(return_value={}),
+        query_thread_capabilities=AsyncMock(return_value={"full": True}),
+        query_thread_role=AsyncMock(return_value={"child": True}),
+        query_thread_network_info=AsyncMock(return_value={"status": 0, "channel": 15}),
         list_scenes=AsyncMock(return_value=[]),
         set_device_time=AsyncMock(),
         set_device_location=AsyncMock(),
@@ -70,6 +71,90 @@ def settings(ha_modules):
     )
     coordinator._session = device
     return coordinator, device
+
+
+@pytest.mark.parametrize("failed", ["capabilities", "role", "network"])
+async def test_thread_groups_fail_independently_and_keep_other_readbacks(settings, failed):
+    coordinator, device = settings
+    methods = {
+        "capabilities": device.query_thread_capabilities,
+        "role": device.query_thread_role,
+        "network": device.query_thread_network_info,
+    }
+    methods[failed].side_effect = RuntimeError("endpoint returned status 4")
+    await coordinator._refresh_static_data()
+    assert coordinator.data["thread_readbacks"][failed] is None
+    for group, method in methods.items():
+        method.assert_awaited_once()
+        if group != failed:
+            assert coordinator.data["thread_readbacks"][group] is not None
+    device.list_scenes.assert_awaited_once()
+
+
+async def test_missing_thread_group_retries_after_interval_without_reconnect(
+    settings, ha_modules, monkeypatch
+):
+    coordinator, device = settings
+    clock = [100.0]
+    monkeypatch.setattr(ha_modules.coordinator, "monotonic", lambda: clock[0])
+    device.query_thread_capabilities.side_effect = [RuntimeError("rejected"), {"full": True}]
+    await coordinator._refresh_static_data()
+    coordinator.data = await coordinator._async_update_data()
+    clock[0] = 159.0
+    coordinator.data = await coordinator._async_update_data()
+    assert device.query_thread_capabilities.await_count == 1
+    clock[0] = 160.0
+    coordinator.data = await coordinator._async_update_data()
+    assert coordinator.data["thread"]["full"] is True
+    assert coordinator.data["thread"]["channel"] == 15
+    assert device.query_thread_capabilities.await_count == 2
+    device.query_thread_role.assert_awaited_once()
+    device.query_thread_network_info.assert_awaited_once()
+    clock[0] = 220.0
+    coordinator.data = await coordinator._async_update_data()
+    assert device.query_thread_capabilities.await_count == 2
+    device.close.assert_not_awaited()
+
+
+async def test_thread_retry_timeout_preserves_light_and_partial_readbacks(settings):
+    coordinator, device = settings
+    coordinator.data["thread_readbacks"] = {"network": {"status": 0, "channel": 15}}
+    device.query_thread_capabilities.side_effect = TimeoutError("gone")
+    result = await coordinator._async_update_data()
+    assert result["light"] == {"power": True}
+    assert result["thread"]["channel"] == 15
+    assert result["thread_readbacks"]["capabilities"] is None
+    device.query_thread_role.assert_not_awaited()
+    device.query_circadian_settings.assert_not_awaited()
+    device.close.assert_awaited_once()
+    assert coordinator._session is None
+
+
+async def test_thread_reconnect_clears_stale_groups_and_stops_on_broken_cipher(
+    settings, ha_modules
+):
+    coordinator, device = settings
+    coordinator.data["thread_readbacks"] = {"network": {"status": 0, "channel": 15}}
+    coordinator._session = None
+    coordinator._open_session = AsyncMock(return_value=device)
+    device._cipher_corrupted = True
+    device.query_thread_capabilities.side_effect = RuntimeError("wrapped timeout")
+    with pytest.raises(ha_modules.coordinator.UpdateFailed, match="device diagnostics"):
+        await coordinator._async_update_data()
+    assert coordinator.data["thread"] is None
+    assert all(value is None for value in coordinator.data["thread_readbacks"].values())
+    device.query_thread_role.assert_not_awaited()
+    device.list_scenes.assert_not_awaited()
+    device.query_light_state.assert_not_awaited()
+    device.close.assert_awaited_once()
+
+
+async def test_thread_dataset_rejected_status_is_missing_and_retried(settings):
+    coordinator, device = settings
+    device.query_thread_network_info.return_value = {"status": 4, "network_name": None}
+    await coordinator._refresh_thread_data()
+    assert coordinator.data["thread_readbacks"]["network"] is None
+    assert coordinator.data["thread"]["child"] is True
 
 
 async def test_settings_read_false_is_valid_and_unknown_is_none(settings):

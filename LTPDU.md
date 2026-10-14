@@ -270,7 +270,7 @@ NL45 uses a fixed flat layout: 10 B hw + 8 B fw (ASCII) + 11 B serial + 8 B EUI-
 | Endpoint | Description |
 |---|---|
 | `th/nc` | Node capabilities (1-byte bitfield) |
-| `th/tr` | Thread role (1-byte bitfield) |
+| `th/tr` | Thread role (1-byte enum on Matter, bitfield on HomeKit) |
 | `th/ds` | Active Operational Dataset (MeshCoP TLV, NL67/Matter) |
 | `th/tc` | Thread network info TLV8 (legacy devices) |
 
@@ -284,7 +284,17 @@ NL45 uses a fixed flat layout: 10 B hw + 8 B fw (ASCII) + 11 B serial + 8 B EUI-
 | `0x08` | Router-eligible |
 | `0x10` | Border Router capable |
 
-**`th/tr`  -  Thread role bitfield:**
+**`th/tr`  -  Matter role enum:**
+
+| Value | Meaning |
+|---|---|
+| `0` | Disabled |
+| `1` | Detached |
+| `2` | Child |
+| `3` | Router (mesh extender) |
+| `4` | Leader |
+
+**`th/tr`  -  HomeKit role bitfield:**
 
 | Bit | Meaning |
 |---|---|

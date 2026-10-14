@@ -33,7 +33,8 @@ NL55/NL58/NL62 use the same protocol variant as NL45 and are expected to work bu
 | Auto Circadian Lighting | switch and schedule action |
 | Clock, timezone, and location | actions and synchronization button |
 | Power Loss Recovery | configuration switch |
-| Motion capabilities | diagnostic sensor and response action |
+| Supported animations | diagnostic sensor and response action |
+| Circadian clock, timezone offset, latitude, longitude | diagnostic sensors (disabled by default) |
 | Identify (blink) | yes |
 | Thread diagnostics | yes (sensor entities) |
 | Device info | yes (device page) |
@@ -99,9 +100,17 @@ The integration polls light state every 5 seconds and optional settings every 60
 
 Missing device metadata is retried during subsequent settings polls. Settings queries and writes run in sequence to preserve accepted values when controls and polling overlap.
 
+Thread capabilities, role, and network information are read independently. A rejected endpoint does not prevent the other groups from loading. Missing groups are retried every 60 seconds without reconnecting; sensors with failed or absent readbacks are unavailable. Successful groups are cached until the next connection.
+
+Thread roles use Matter's enum encoding on Matter bulbs and the bitfield encoding on older HomeKit bulbs. For example, a Matter role value of `3` is displayed as `router`.
+
 ### Circadian lighting and device settings
 
-Supported bulbs expose **Auto Circadian Lighting** and **Power Loss Recovery** configuration switches, a **Sync Circadian clock and location** button, and a **Motion capabilities** diagnostic sensor. Enable the diagnostic sensor in the entity settings to inspect its animations and parameter attributes. Availability depends on the bulb's model, firmware, and successful settings readback.
+Supported bulbs expose **Auto Circadian Lighting** and **Power Loss Recovery** configuration switches, a **Sync Circadian clock and location** button, and a **Supported animations** diagnostic sensor. Enable the diagnostic sensor in the entity settings to inspect its animations and parameter attributes. Availability depends on the bulb's model, firmware, and successful settings readback.
+
+Supported animations displays a description such as **Fade, Highlight, Random**. Its attributes retain the full animation list and parameter details.
+
+**Circadian clock**, **Circadian timezone offset**, **Circadian latitude**, and **Circadian longitude** are diagnostic sensors, disabled by default. Enable them in the entity settings to inspect the bulb's stored time and location. They use settings readbacks refreshed every 60 seconds, including when circadian lighting is off. The clock is a timestamp displayed in Home Assistant's local timezone; the separate offset sensor shows the bulb's timezone as `UTC+03:00`, for example. Coordinates are in degrees. An unset clock (epoch zero) is shown as unknown; unsupported settings or failed readbacks make their sensors unavailable.
 
 Configure the schedule through **Developer Tools → Actions → Enhanced Nanoleaf Lights: Configure circadian lighting** (`nanoleaf_lights.set_circadian_config`). Supply all three white points, all three ramp durations, and the two timing fields for the selected mode. Fixed times are minutes after midnight; sunrise/sunset offsets are signed minutes. White points are clamped to the bulb's supported range.
 

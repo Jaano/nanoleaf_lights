@@ -85,7 +85,19 @@
     },
     "sensor": {
       "motion_capabilities": {
-        "name": "Motion capabilities"
+        "name": "Supported animations"
+      },
+      "circadian_clock": {
+        "name": "Circadian clock"
+      },
+      "circadian_timezone_offset": {
+        "name": "Circadian timezone offset"
+      },
+      "circadian_latitude": {
+        "name": "Circadian latitude"
+      },
+      "circadian_longitude": {
+        "name": "Circadian longitude"
       }
     }
   },

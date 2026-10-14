@@ -399,6 +399,15 @@ _WIFI_MODELS = {
 }
 
 
+def decode_thread_role(value: int, model: str | None) -> dict[str, Any]:
+    """Decode Matter role enums and HomeKit role bitfields."""
+    flags = ("disabled", "detached", "joining", "child", "router", "leader", "border_router")
+    if (model or "").upper() in _THREAD_MODELS | _WIFI_MODELS:
+        role = {0: "disabled", 1: "detached", 2: "child", 3: "router", 4: "leader"}.get(value)
+        return {"raw": value, **{name: name == role for name in flags}}
+    return {"raw": value, **{name: bool(value & (1 << bit)) for bit, name in enumerate(flags)}}
+
+
 def _version_tuple(firmware: str | None) -> tuple[int, int, int] | None:
     if not isinstance(firmware, str):
         return None
@@ -1052,11 +1061,8 @@ class V3Controls:
         )
 
     async def query_thread_role(self, timeout: float = 10.0) -> dict[str, Any]:
-        return await self._thread_flags(
-            "th/tr",
-            ("disabled", "detached", "joining", "child", "router", "leader", "border_router"),
-            timeout,
-        )
+        value = _uint(await self._request("th/tr", timeout=timeout), "th/tr", 1)
+        return decode_thread_role(value, getattr(self, "_model", None))
 
     async def query_thread_network_info(self, timeout: float = 10.0) -> dict[str, Any]:
         raw = await self._request("th/ds", timeout=timeout)

@@ -1726,6 +1726,9 @@ class LtpduSession:
     async def query_thread_role(self, timeout: float = 10.0) -> dict[str, Any]:
         """Read Thread role via ``th/tr`` (0x0801 read).
 
+        Matter models return role enums (0 disabled, 1 detached, 2 child,
+        3 router, 4 leader). HomeKit models return the bitfield below.
+
         Returns:
             Dict with keys:
 
@@ -1747,16 +1750,7 @@ class LtpduSession:
         if not val:
             raise RuntimeError("query_thread_role: empty value")
         role = val[0]
-        return {
-            "raw": role,
-            "disabled": bool(role & 0x01),
-            "detached": bool(role & 0x02),
-            "joining": bool(role & 0x04),
-            "child": bool(role & 0x08),
-            "router": bool(role & 0x10),
-            "leader": bool(role & 0x20),
-            "border_router": bool(role & 0x40),
-        }
+        return _settings_module().decode_thread_role(role, self._model)
 
     async def query_thread_network_info(self, timeout: float = 10.0) -> dict[str, Any]:
         """Read Thread Operational Dataset via ``th/ds``.

@@ -38,6 +38,12 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 _SETTINGS_INTERVAL = 60.0
+_THREAD_INTERVAL = 60.0
+_THREAD_QUERIES = {
+    "capabilities": "query_thread_capabilities",
+    "role": "query_thread_role",
+    "network": "query_thread_network_info",
+}
 _CIRCADIAN_FIELDS = {
     "daylight_target_kelvin": "daylightTargetK",
     "evening_target_kelvin": "eveningTargetK",
@@ -115,6 +121,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._scene_lookup: SceneLookup | None = None
         self._settings_updated_at = 0.0
+        self._thread_updated_at = 0.0
         self._settings_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -176,14 +183,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         assert self._session is not None
         await self._refresh_device_info()
 
-        thread: dict[str, Any] | None = None
-        try:
-            caps = await self._session.query_thread_capabilities(timeout=10.0)
-            role = await self._session.query_thread_role(timeout=10.0)
-            net = await self._session.query_thread_network_info(timeout=10.0)
-            thread = {**caps, **role, **net}
-        except Exception as exc:
-            _LOGGER.debug("Could not fetch Thread info: %s", exc)
+        await self._refresh_thread_data(force=True)
 
         scene_handles: list[bytes] = []
         try:
@@ -211,11 +211,46 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_set_updated_data(
             {
                 **existing,
-                "thread": thread,
                 "scene_handles": scene_handles,
                 "scene_names": scene_names,
             }
         )
+
+    async def _refresh_thread_data(self, *, force: bool = False) -> None:
+        """Read Thread groups independently and retry only missing readbacks."""
+        assert self._session is not None
+        readbacks = (
+            dict.fromkeys(_THREAD_QUERIES)
+            if force else dict((self.data or {}).get("thread_readbacks") or {})
+        )
+        try:
+            for group, method in _THREAD_QUERIES.items():
+                if readbacks.get(group) is not None:
+                    continue
+                readbacks[group] = None
+                try:
+                    value = await getattr(self._session, method)(timeout=10.0)
+                    if not value or value.get("status", 0) != 0:
+                        raise RuntimeError(f"Thread {group} returned no valid readback")
+                    readbacks[group] = value
+                except (SessionExpiredError, TimeoutError, OSError):
+                    raise
+                except Exception as exc:
+                    if getattr(self._session, "_cipher_corrupted", False) or getattr(
+                        self._session, "_broken", False
+                    ):
+                        raise ConnectionError("Thread exchange invalidated the session") from exc
+                    _LOGGER.debug("Could not fetch Thread %s: %s", group, exc)
+        finally:
+            self._thread_updated_at = monotonic()
+            thread = {
+                key: value
+                for group in _THREAD_QUERIES
+                for key, value in (readbacks.get(group) or {}).items()
+            }
+            self.async_set_updated_data(
+                {**(self.data or {}), "thread": thread or None, "thread_readbacks": readbacks}
+            )
 
     async def _refresh_settings(self, groups: set[str] | None = None) -> None:
         """Serialize settings reads with settings actions."""
@@ -292,7 +327,13 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise UpdateFailed(f"Cannot open session: {exc}") from exc
             self._consecutive_auth_failures = 0
             # Populate static data right after a fresh connection.
-            await self._refresh_static_data()
+            try:
+                await self._refresh_static_data()
+            except (SessionExpiredError, TimeoutError, OSError) as exc:
+                await self._safe_close()
+                raise UpdateFailed(
+                    f"Connection lost while reading device diagnostics: {exc}"
+                ) from exc
 
         async def _query() -> tuple[dict[str, Any], bytes]:
             assert self._session is not None
@@ -316,7 +357,20 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._safe_close()
             raise UpdateFailed(f"Connection lost: {exc}") from exc
 
-        if monotonic() - self._settings_updated_at >= _SETTINGS_INTERVAL:
+        if monotonic() - self._thread_updated_at >= _THREAD_INTERVAL and any(
+            ((self.data or {}).get("thread_readbacks") or {}).get(group) is None
+            for group in _THREAD_QUERIES
+        ):
+            try:
+                await self._refresh_thread_data()
+            except (SessionExpiredError, TimeoutError, OSError) as exc:
+                _LOGGER.debug("Thread connection failed: %s", exc)
+                await self._safe_close()
+
+        if (
+            self._session is not None
+            and monotonic() - self._settings_updated_at >= _SETTINGS_INTERVAL
+        ):
             groups = {"circadian", "clock", "location", "power_loss_recovery"}
             if (self.data or {}).get("motion_capabilities") is None:
                 groups.add("motion_capabilities")

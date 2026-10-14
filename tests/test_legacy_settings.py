@@ -115,6 +115,18 @@ async def test_device_info_caches_fixed_layout_firmware_and_retains_discovery_mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model,value,expected", [("NL67", 3, "router"), ("NL45", 8, "child")])
+async def test_legacy_thread_role_uses_model_specific_encoding(
+    model: str, value: int, expected: str
+) -> None:
+    session = make_session(model)
+    session.get_ltpdu.return_value = response("th/tr", bytes([value]))
+    role = await session.query_thread_role()
+    assert role["raw"] == value
+    assert [key for key, active in role.items() if key != "raw" and active] == [expected]
+
+
+@pytest.mark.asyncio
 async def test_shared_clock_settings_use_legacy_get_and_post() -> None:
     session = make_session()
     epoch, zone = 1_800_000_000, -18_000
