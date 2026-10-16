@@ -1,6 +1,6 @@
 {
   "domain": "nanoleaf_lights",
-  "name": "Enhanced Nanoleaf Lights",
+  "name": "Nanoleaf Lights (++)",
   "version": "0.4.3",
   "config_flow": true,
   "dependencies": [],

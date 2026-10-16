@@ -1,4 +1,4 @@
-# Enhanced Nanoleaf Lights
+# Nanoleaf Lights (++)
 
 Home Assistant integration for Nanoleaf Essentials bulbs with scene activation, circadian lighting, device settings, and diagnostics alongside power, brightness, and color controls.
 
@@ -56,7 +56,7 @@ This integration is not (yet) in the default HACS repository, so it must be adde
 3. Add the repository:
    - **Repository:** `https://github.com/Jaano/nanoleaf_lights`
    - **Type:** `Integration`
-4. Click **Add**, then find **Enhanced Nanoleaf Lights** in the HACS integrations list and click **Download**.
+4. Click **Add**, then find **Nanoleaf Lights (++)** in the HACS integrations list and click **Download**.
 5. **Restart Home Assistant** (Settings -> System -> Restart).
 6. Continue with [Adding a Device](#adding-a-device).
 
@@ -74,7 +74,7 @@ The integration requires `aiocoap` and `cryptography`; Home Assistant installs t
 
 > **Prerequisite:** The bulb must already be joined to your Thread network via Matter (e.g. using the Nanoleaf app or Apple Home). Matter is not used by this integration — only for the initial network join.
 
-1. Go to **Settings -> Devices & Services -> Add Integration** and search for **Enhanced Nanoleaf Lights**.
+1. Go to **Settings -> Devices & Services -> Add Integration** and search for **Nanoleaf Lights (++)**.
 2. Devices on the local Thread network are auto-discovered via mDNS. For manual setup, enter the address and advertised port (`12566` for NL67 firmware 5.1.45; older devices commonly use `5653` or `5683`). New-protocol pairing also needs the bulb's advertised Nanoleaf name, such as `Nanoleaf A19 E20-78E2`; enter that in **Discovered Name**.
 3. Enter the **Pairing Code** printed on the bulb.
 
@@ -84,7 +84,7 @@ If a bulb is unpaired and re-paired in your Matter environment (e.g. re-added in
 
 To recover without removing and re-adding the integration:
 
-1. Go to **Settings -> Devices & Services -> Enhanced Nanoleaf Lights** and open the affected device.
+1. Go to **Settings -> Devices & Services -> Nanoleaf Lights (++)** and open the affected device.
 2. Click the **⋮** menu -> **Reconfigure**.
 3. Confirm the new address and advertised port. If the bulb was factory-reset or upgraded from the legacy protocol, enter its **Pairing Code** to obtain new credentials. For manual new-protocol pairing, also supply the advertised **Discovered Name**.
 
@@ -114,7 +114,7 @@ Supported animations displays a description such as **Fade, Highlight, Random**.
 
 **Circadian clock**, **Circadian timezone offset**, **Circadian latitude**, and **Circadian longitude** are diagnostic sensors, disabled by default. Enable them in the entity settings to inspect the bulb's stored time and location. They use settings readbacks refreshed every 60 seconds, including when circadian lighting is off. The clock is a timestamp displayed in Home Assistant's local timezone; the separate offset sensor shows the bulb's timezone as `UTC+03:00`, for example. Coordinates are in degrees. An unset clock (epoch zero) is shown as unknown; unsupported settings or failed readbacks make their sensors unavailable.
 
-Configure the schedule through **Developer Tools → Actions → Enhanced Nanoleaf Lights: Configure circadian lighting** (`nanoleaf_lights.set_circadian_config`). Supply all three white points, all three ramp durations, and the two timing fields for the selected mode. Fixed times are minutes after midnight; sunrise/sunset offsets are signed minutes. White points are clamped to the bulb's supported range.
+Configure the schedule through **Developer Tools → Actions → Nanoleaf Lights (++): Configure circadian lighting** (`nanoleaf_lights.set_circadian_config`). Supply all three white points, all three ramp durations, and the two timing fields for the selected mode. Fixed times are minutes after midnight; sunrise/sunset offsets are signed minutes. White points are clamped to the bulb's supported range.
 
 ```yaml
 action: nanoleaf_lights.set_circadian_config
