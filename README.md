@@ -64,7 +64,7 @@ Updates will appear in HACS like any other integration; click **Update** and res
 
 ### Option 2: Manual installation
 
-1. Copy the `custom_components/nanoleaf_lights/` directory into your Home Assistant `config/custom_components/` directory, following its symlinks so the protocol modules are copied as files. The final path should be `config/custom_components/nanoleaf_lights/`. If the entire checkout is accessible to HA, symlinking the integration directory also works.
+1. Copy the `custom_components/nanoleaf_lights/` directory into your Home Assistant `config/custom_components/` directory. The final path should be `config/custom_components/nanoleaf_lights/`. The directory includes all protocol modules needed by the integration.
 2. Restart Home Assistant.
 3. Continue with [Adding a Device](#adding-a-device).
 
