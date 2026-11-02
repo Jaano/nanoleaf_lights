@@ -20,6 +20,7 @@ UPDATE_INTERVAL = timedelta(seconds=5)
 
 # Storage
 STORAGE_DIR = "nanoleaf_lights"
+PUBLIC_SCENES_DIR = "nanoleaf-lights"
 SCENES_FILENAME = "scenes.json"
 
 # Light

@@ -48,6 +48,11 @@ _CIRCADIAN_FIELDS = {
     },
 }
 _CIRCADIAN_KEYS = tuple(key.schema for key in _CIRCADIAN_FIELDS)
+_SCENE_FIELDS = {
+    vol.Required("scene"): vol.All(cv.string, vol.Length(min=1)),
+    vol.Optional("effect", default="fade"): vol.In(("fade", "random", "highlight")),
+    vol.Optional("transition", default=24): vol.All(int, vol.Range(min=0, max=255)),
+}
 
 
 def _validate_circadian(data: dict[str, Any]) -> dict[str, Any]:
@@ -80,6 +85,12 @@ async def _target_entries(call: ServiceCall, capability: str) -> list[ConfigEntr
             raise ServiceValidationError(
                 f"The targeted Nanoleaf device does not support {capability}"
             )
+        if (
+            capability == "scene_upload"
+            and call.data.get("transition") == 0
+            and capabilities.get("scene_protocol") == "effectV2"
+        ):
+            raise ServiceValidationError("Native effectV2 requires a transition of at least 1")
         entries.append(entry)
     if not entries:
         raise ServiceValidationError("Select an Enhanced Nanoleaf entity or device")
@@ -115,7 +126,35 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             devices[entry.entry_id] = await entry.runtime_data.async_get_motion_capabilities()
         return {"devices": devices}
 
+    async def preview_scene(call: ServiceCall) -> None:
+        for entry in await _target_entries(call, "scene_upload"):
+            await entry.runtime_data.async_scene_action(
+                call.data["scene"], call.data["effect"], call.data["transition"], upload=False
+            )
+
+    async def upload_scene(call: ServiceCall) -> None:
+        for entry in await _target_entries(call, "scene_upload"):
+            await entry.runtime_data.async_scene_action(
+                call.data["scene"], call.data["effect"], call.data["transition"],
+                upload=True, activate=call.data["activate"],
+            )
+
     registrations = (
+        (
+            "preview_scene",
+            preview_scene,
+            vol.Schema({**_TARGET_FIELDS, **_SCENE_FIELDS}),
+            SupportsResponse.NONE,
+        ),
+        (
+            "upload_scene",
+            upload_scene,
+            vol.Schema({
+                **_TARGET_FIELDS, **_SCENE_FIELDS,
+                vol.Optional("activate", default=False): bool,
+            }),
+            SupportsResponse.NONE,
+        ),
         (
             "set_circadian_config",
             set_circadian_config,

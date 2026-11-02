@@ -1,3 +1,84 @@
+preview_scene:
+  name: Preview scene
+  description: Play a bulb-compatible palette animation on NL45 or NL67 (firmware 5+, native effectV2) without saving it.
+  target:
+    entity:
+      integration: nanoleaf_lights
+      domain: light
+  fields:
+    scene:
+      name: Scene UUID
+      description: UUID from the integration's downloaded scene database.
+      required: true
+      selector:
+        text:
+    effect:
+      name: Animation
+      selector:
+        select:
+          translation_key: scene_animation
+          options:
+            - fade
+            - random
+            - highlight
+    transition:
+      name: Transition
+      description: Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24.
+      selector:
+        number:
+          min: 0
+          max: 255
+          step: 1
+          mode: box
+    config_entry_id:
+      name: Integration entry ID
+      advanced: true
+      selector:
+        text:
+
+upload_scene:
+  name: Upload scene
+  description: Save and verify an NL45 or NL67 palette animation. NL67 requires firmware 5+ and native effectV2. Enforces the 12-scene limit and never replaces an existing scene.
+  target:
+    entity:
+      integration: nanoleaf_lights
+      domain: light
+  fields:
+    scene:
+      name: Scene UUID
+      description: UUID from the integration's downloaded scene database.
+      required: true
+      selector:
+        text:
+    effect:
+      name: Animation
+      selector:
+        select:
+          translation_key: scene_animation
+          options:
+            - fade
+            - random
+            - highlight
+    transition:
+      name: Transition
+      description: Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24.
+      selector:
+        number:
+          min: 0
+          max: 255
+          step: 1
+          mode: box
+    activate:
+      name: Activate after upload
+      description: Off by default. Activate only after successful readback verification.
+      selector:
+        boolean:
+    config_entry_id:
+      name: Integration entry ID
+      advanced: true
+      selector:
+        text:
+
 set_circadian_config:
   name: Configure circadian lighting
   description: Store a complete white-point schedule on the bulb. Sunrise/sunset mode also copies Home Assistant's clock, timezone and location to the bulb.

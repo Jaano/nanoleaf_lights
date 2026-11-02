@@ -102,6 +102,13 @@
     }
   },
   "selector": {
+    "scene_animation": {
+      "options": {
+        "fade": "Sujuv üleminek",
+        "random": "Juhuslik",
+        "highlight": "Esiletõstmine"
+      }
+    },
     "circadian_mode": {
       "options": {
         "explicit": "Kindlad kellaajad",
@@ -110,6 +117,27 @@
     }
   },
   "services": {
+    "preview_scene": {
+      "name": "Vaata stseeni eelvaadet",
+      "description": "Esita NL45 või NL67 lambil paletianimatsioon ilma seda salvestamata. NL67 vajab püsivara 5+ ja effectV2 protokolli.",
+      "fields": {
+        "scene": { "name": "Stseeni UUID", "description": "UUID integratsiooni allalaaditud stseenide andmebaasist." },
+        "effect": { "name": "Animatsioon" },
+        "transition": { "name": "Üleminek", "description": "Protokolli väärtus 0 kuni 255, mitte sekundid. NL67 miinimum on 1. Vaikeväärtus on 24." },
+        "config_entry_id": { "name": "Integratsiooni kirje ID" }
+      }
+    },
+    "upload_scene": {
+      "name": "Laadi stseen lambile",
+      "description": "Salvesta ja kontrolli NL45 või NL67 paletianimatsioon. NL67 vajab püsivara 5+ ja effectV2 protokolli. Lubatud on kuni 12 stseeni; olemasolevaid stseene ei asendata.",
+      "fields": {
+        "scene": { "name": "Stseeni UUID", "description": "UUID integratsiooni allalaaditud stseenide andmebaasist." },
+        "effect": { "name": "Animatsioon" },
+        "transition": { "name": "Üleminek", "description": "Protokolli väärtus 0 kuni 255, mitte sekundid. NL67 miinimum on 1. Vaikeväärtus on 24." },
+        "activate": { "name": "Aktiveeri pärast üleslaadimist", "description": "Vaikimisi väljas. Aktiveeri alles pärast edukat tagasilugemist." },
+        "config_entry_id": { "name": "Integratsiooni kirje ID" }
+      }
+    },
     "set_circadian_config": {
       "name": "Seadista ööpäevavalgustus",
       "description": "Salvesta lambile täielik valgepunkti ajakava. Päikesetõusu ja -loojangu režiim kopeerib lambile ka Home Assistanti kella, ajavööndi ja asukoha.",

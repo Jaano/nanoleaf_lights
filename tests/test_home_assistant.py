@@ -1,10 +1,11 @@
-"""Offline settings entities/action tests using a small Home Assistant surface."""
+"""Offline Home Assistant entities, actions, setup, and configuration flows."""
 
 # Dynamic HA fixtures exercise real service schemas with the installed validator.
 # ruff: noqa: ANN001, ANN003, ANN201, ANN202, ANN204
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -157,7 +158,40 @@ def coordinator(**data):
         async_set_device_time=AsyncMock(),
         async_set_device_location=AsyncMock(),
         async_get_motion_capabilities=AsyncMock(return_value={"motions": []}),
+        async_scene_action=AsyncMock(),
     )
+
+
+async def test_refresh_button_downloads_to_selected_path_before_reloading(
+    settings, monkeypatch, tmp_path
+) -> None:
+    from nl_api import NanoleafCloudApi
+
+    public_path = tmp_path / "www/nanoleaf-lights/scenes.json"
+    runtime = coordinator()
+    runtime.scenes_path = tmp_path / ".storage/nanoleaf_lights/scenes.json"
+    runtime.async_select_scenes_path = AsyncMock(return_value=public_path)
+    runtime.async_reload_scenes = AsyncMock()
+    effects = [{"uuid": "police", "name": "Police", "palette": "00ff00"}]
+
+    def build_scenes(path):
+        runtime.async_select_scenes_path.assert_awaited_once()
+        runtime.async_reload_scenes.assert_not_awaited()
+        NanoleafCloudApi._write_scenes(path, effects)
+
+    api = SimpleNamespace(build_scenes=build_scenes)
+    monkeypatch.setattr(settings.button, "NanoleafCloudApi", lambda: api)
+    button = settings.button.NanoleafRefreshScenesButton(runtime)
+    button.hass = SimpleNamespace(
+        async_add_executor_job=AsyncMock(side_effect=lambda function, *args: function(*args))
+    )
+
+    await button.async_press()
+
+    button.hass.async_add_executor_job.assert_awaited_once_with(api.build_scenes, public_path)
+    runtime.async_reload_scenes.assert_awaited_once()
+    assert json.loads(public_path.read_text()) == {"effects": effects}
+    assert not runtime.scenes_path.exists()
 
 
 @pytest.mark.asyncio
@@ -439,10 +473,10 @@ class Registry:
 def harness(settings):
     registry = Registry()
     loaded = coordinator(
-        capabilities=dict.fromkeys(["circadian", "time", "location", "motions"], True)
+        capabilities=dict.fromkeys(["circadian", "time", "location", "motions", "scene_upload"], True)
     )
     other = coordinator(
-        capabilities=dict.fromkeys(["circadian", "time", "location", "motions"], True)
+        capabilities=dict.fromkeys(["circadian", "time", "location", "motions", "scene_upload"], True)
     )
     entries = {
         "a": SimpleNamespace(
@@ -480,11 +514,74 @@ async def test_actions_registered_once_and_no_connection_during_registration(set
     hass, registry, entries = harness(settings)
     await settings.services.async_setup_services(hass)
     await settings.services.async_setup_services(hass)
-    assert registry.registrations == 4
+    assert registry.registrations == 6
     getter = registry.actions[(DOMAIN, "get_motion_capabilities")][1]
     assert getter["supports_response"] is settings.responses.ONLY
     for entry in [entries["a"], entries["b"]]:
         entry.runtime_data.async_set_device_time.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,upload", [("preview_scene", False), ("upload_scene", True)])
+async def test_scene_actions_target_integration_and_preserve_safe_defaults(settings, action, upload):
+    hass, registry, entries = harness(settings)
+    await settings.services.async_setup_services(hass)
+    await registry.invoke(hass, action, {"scene": "police", "entity_id": "light.bulb"}, ["a"])
+    expected = {"upload": upload}
+    if upload:
+        expected["activate"] = False
+    entries["a"].runtime_data.async_scene_action.assert_awaited_once_with(
+        "police", "fade", 24, **expected
+    )
+    entries["b"].runtime_data.async_scene_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["preview_scene", "upload_scene"])
+async def test_native_zero_transition_validates_all_targets_before_writing(settings, action):
+    hass, registry, entries = harness(settings)
+    entries["b"].runtime_data.data["capabilities"]["scene_protocol"] = "effectV2"
+    await settings.services.async_setup_services(hass)
+    with pytest.raises(RuntimeError, match="transition of at least 1"):
+        await registry.invoke(hass, action, {"scene": "police", "transition": 0}, ["a", "b"])
+    for identifier in ("a", "b"):
+        entries[identifier].runtime_data.async_scene_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_zero_transition_remains_valid(settings):
+    hass, registry, entries = harness(settings)
+    await settings.services.async_setup_services(hass)
+    await registry.invoke(hass, "preview_scene", {"scene": "police", "transition": 0}, ["a"])
+    entries["a"].runtime_data.async_scene_action.assert_awaited_once_with(
+        "police", "fade", 0, upload=False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [
+    {"scene": ""},
+    {"scene": "police", "transition": -1},
+    {"scene": "police", "transition": 256},
+    {"scene": "police", "transition": 1.5},
+    {"scene": "police", "effect": "flow"},
+    {"scene": "police", "activate": "false"},
+])
+async def test_scene_action_schema_rejects_invalid_values(settings, data):
+    hass, registry, entries = harness(settings)
+    await settings.services.async_setup_services(hass)
+    with pytest.raises(vol.Invalid):
+        await registry.invoke(hass, "upload_scene", data, ["a"])
+    entries["a"].runtime_data.async_scene_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scene_actions_validate_all_targets_before_writing(settings):
+    hass, registry, entries = harness(settings)
+    entries["b"].runtime_data.data["capabilities"]["scene_upload"] = False
+    await settings.services.async_setup_services(hass)
+    with pytest.raises(RuntimeError, match="does not support scene_upload"):
+        await registry.invoke(hass, "upload_scene", {"scene": "police"}, ["a", "b"])
+    entries["a"].runtime_data.async_scene_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -616,6 +713,8 @@ def test_service_ui_metadata_and_translations_cover_all_action_fields():
         "set_device_time",
         "set_device_location",
         "get_motion_capabilities",
+        "preview_scene",
+        "upload_scene",
     }
     assert not any(
         "default" in field for action in services.values() for field in action["fields"].values()
@@ -649,7 +748,7 @@ async def test_global_actions_remain_registered_after_entry_unload(settings):
     entries["a"].runtime_data.async_shutdown = AsyncMock()
     assert await integration.async_setup(hass, {})
     assert await integration.async_unload_entry(hass, entries["a"])
-    assert len(registry.actions) == 4
+    assert len(registry.actions) == 6
     entries["a"].runtime_data.async_shutdown.assert_awaited_once()
 
 
@@ -680,3 +779,131 @@ async def test_setup_uses_own_device_even_with_saved_device_page_options(setting
     assert entity.device_info["identifiers"] == {(DOMAIN, "e20")}
     assert entity.device_info["serial_number"] == "SERIAL"
     assert getattr(entity, "device_entry", None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handle", [b"\xfb", b"\x00\x00\x00\xfb"])
+async def test_light_reports_and_plays_entire_scene_identifier(ha_modules, handle):
+    played = []
+
+    class Device:
+        async def play_scene(self, value):
+            played.append(value)
+
+    async def call(action):
+        await action(Device())
+
+    light = ha_modules.light.NanoleafLtpduLight.__new__(ha_modules.light.NanoleafLtpduLight)
+    light.coordinator = SimpleNamespace(
+        data={"current_scene": handle, "scene_names": {handle: "Device scene"}},
+        async_service_call=call,
+    )
+    assert light.effect == "Device scene"
+    assert light.effect_list == ["Device scene"]
+    await light._play_effect("Device scene")
+    assert played == [handle]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supplied_name", [None, "Essentials-E20"])
+async def test_reconfigure_passes_name_and_preserves_it_unless_supplied(
+    ha_modules, monkeypatch, supplied_name
+):
+    calls = []
+    session = SimpleNamespace(token=b"old-token", closed=False)
+
+    async def close():
+        session.closed = True
+
+    session.close = close
+
+    async def connect(ip, port, **options):
+        calls.append((ip, port, options))
+        return session
+
+    module = ha_modules.config_flow
+    monkeypatch.setattr(module, "_connect_session", connect)
+    entry = SimpleNamespace(
+        data={
+            "ip_address": "::1",
+            "port": 12566,
+            "model": "NL67",
+            "token": b"old-token".hex(),
+            "name": "Existing-E20",
+        }
+    )
+    flow = module.NanoleafLtpduConfigFlow()
+    flow._get_reconfigure_entry = lambda: entry
+    user_input = {"ip_address": "::2", "port": 12566, "model": "NL67"}
+    if supplied_name is not None:
+        user_input["name"] = supplied_name
+    result = await flow.async_step_reconfigure_confirm(user_input)
+    assert session.closed
+    assert calls == [
+        (
+            "::2",
+            12566,
+            {
+                "model": "NL67",
+                "name": supplied_name or "Existing-E20",
+                "pin": None,
+                "token": b"old-token",
+                "timeout": 10.0,
+            },
+        )
+    ]
+    assert result["data"]["name"] == (supplied_name or "Existing-E20")
+    assert result["data"]["ip_address"] == "::2"
+
+
+@pytest.mark.asyncio
+async def test_pair_closes_factory_session_when_device_info_query_is_cancelled(
+    ha_modules, monkeypatch
+):
+    session = SimpleNamespace(token=b"new-token", closed=False)
+
+    async def close():
+        session.closed = True
+
+    async def query(**kwargs):
+        raise asyncio.CancelledError
+
+    session.close = close
+    session.query_device_info = query
+
+    async def connect(*args: object, **options):
+        assert options["pin"] == "12345678901"
+        assert options["name"] == "Essentials-E20"
+        return session
+
+    module = ha_modules.config_flow
+    monkeypatch.setattr(module, "_connect_session", connect)
+    flow = module.NanoleafLtpduConfigFlow()
+    flow._discovery = {
+        "ip_address": "::1",
+        "port": 12566,
+        "model": "NL67",
+        "name": "Essentials-E20",
+    }
+    with pytest.raises(asyncio.CancelledError):
+        await flow.async_step_pair({"pairing_code": "12345678901"})
+    assert session.closed
+
+
+@pytest.mark.parametrize(("firmware", "minimum"), [("5.1.45", 2100), ("4.1.3", 2127)])
+async def test_light_white_temperature_bounds_and_write_agree(ha_modules, firmware, minimum):
+    device = SimpleNamespace(set_light_state=AsyncMock())
+
+    async def call(action):
+        await action(device)
+
+    light = ha_modules.light.NanoleafLtpduLight.__new__(ha_modules.light.NanoleafLtpduLight)
+    light.coordinator = SimpleNamespace(
+        config_entry=SimpleNamespace(data={"model": "NL67"}),
+        data={"device": {"model_number": "NL67", "firmware_version": firmware}},
+        async_service_call=call,
+        async_request_refresh=AsyncMock(),
+    )
+    assert light.min_color_temp_kelvin == minimum
+    await light.async_turn_on(color_temp_kelvin=2100)
+    device.set_light_state.assert_awaited_once_with(on=True, color_temp=minimum)

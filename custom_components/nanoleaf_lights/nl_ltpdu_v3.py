@@ -19,9 +19,9 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
 if __package__:
-    from .nl_ltpdu import AuthRejectedError, SessionExpiredError
+    from .nl_ltpdu import AuthRejectedError, SessionExpiredError, decode_palette_hex
 else:
-    from nl_ltpdu import AuthRejectedError, SessionExpiredError
+    from nl_ltpdu import AuthRejectedError, SessionExpiredError, decode_palette_hex
 
 
 # SRP and secure-session encryption.
@@ -250,6 +250,8 @@ _MOTIONS = {
     4278386688: "static",
     4278321152: "streamControl",
 }
+
+EFFECT_ID_MAX = 0xFFFEFFFF
 
 
 def _parse_palette(data: bytes) -> dict[str, Any]:
@@ -518,6 +520,7 @@ def device_capabilities(model: str | None, firmware: str | None) -> dict[str, An
         "location": valid,
         "power_loss_recovery": valid,
         "motions": valid,
+        "scene_upload": valid and (model == "NL45" or (model == "NL67" and effect_v2)),
         "scene_protocol": "effectV2"
         if effect_v2
         else "ciOneD"
@@ -705,6 +708,43 @@ _MOTION_DEFAULTS = {
     "pulse": {"delayTime": 0, "loop": True, "transTime": 24},
     "colorpop": {"enableBackgroundColor": False, "fadeOut": 6},
 }
+
+
+def build_effect_v2(
+    palette_hex: str, scene_id: int, name: str, *, effect: str = "fade", transition: int = 24
+) -> bytes:
+    """Encode bare Essentials effectData, using the native HSV palette and options."""
+    _checked_number(scene_id, 0, EFFECT_ID_MAX - 1, "scene ID")
+    _checked_number(transition, 1, 600, "transition")
+    if effect not in {"fade", "random", "highlight"}:
+        raise ValueError("Unsupported scene animation")
+    if not name.strip() or "\x00" in name:
+        raise ValueError("Scene must have a nonempty name without NUL characters")
+    if not palette_hex or len(palette_hex) % 6:
+        raise ValueError("Palette must contain complete RGB hex colors")
+    colors = [color for color in decode_palette_hex(palette_hex) if color[2] > 0][:7]
+    if not colors:
+        raise ValueError("Palette has no visible colors")
+    palette = b"".join(struct.pack(">HBB", *color) for color in colors)
+    values = {**_MOTION_DEFAULTS[effect], "transTime": transition}
+    options = b"".join(
+        _tlv(1, _tlv(2, bytes([code])) + _tlv(3, values[option].to_bytes(
+            2 if fmt == "u16" else 1, "big"
+        )))
+        for code, (option, fmt) in _OPTIONS.items()
+        if option in values
+    )
+    motion_id = next(identifier for identifier, motion in _MOTIONS.items() if motion == effect)
+    return b"".join((
+        _tlv(3, scene_id.to_bytes(4, "big")),
+        _tlv(5, name.encode("utf-8")),
+        _tlv(4, motion_id.to_bytes(4, "big")),
+        _tlv(7, options),
+        _tlv(6, _tlv(1, b"\x00") + _tlv(2, palette)),
+        _tlv(11, b"\xff"),
+    ))
+
+
 _MOTION_UUIDS = {
     "bounce": "db8ce916-88de-484f-bdbb-afd732053105",
     "burst": "713518c1-d560-47db-8991-de780af71d1e",
@@ -896,6 +936,23 @@ class V3Controls:
         if scene is None:
             scene = await self.get_scene(scene_id, timeout=timeout)
         return scene["name"] if scene else None
+
+    async def preview_scene(self, scene_data: bytes, timeout: float = 10.0) -> None:
+        _parse_effect(scene_data)
+        capabilities = await _settings_capabilities(self, timeout, "scene_upload")
+        if capabilities["scene_protocol"] != "effectV2":
+            raise NotImplementedError("Native scene preview requires effectV2")
+        await self._request("effect/display", scene_data, method=1, timeout=timeout)
+
+    async def add_scene(self, scene_data: bytes, timeout: float = 10.0) -> bytes:
+        """Save an effect; the returned requested ID still requires storage readback."""
+        detail = _parse_effect(scene_data)
+        _checked_number(detail["effect_id"], 0, EFFECT_ID_MAX - 1, "scene ID")
+        capabilities = await _settings_capabilities(self, timeout, "scene_upload")
+        if capabilities["scene_protocol"] != "effectV2":
+            raise NotImplementedError("Native scene upload requires effectV2")
+        await self._request("effect", _tlv(1, _tlv(2, scene_data)), method=1, timeout=timeout)
+        return detail["id"]
 
     async def play_scene(self, scene_id: bytes, timeout: float = 10.0) -> None:
         # Scene activation uses the UTF-8 name.

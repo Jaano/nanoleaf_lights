@@ -102,6 +102,13 @@
     }
   },
   "selector": {
+    "scene_animation": {
+      "options": {
+        "fade": "Fade",
+        "random": "Random",
+        "highlight": "Highlight"
+      }
+    },
     "circadian_mode": {
       "options": {
         "explicit": "Fixed clock times",
@@ -110,6 +117,27 @@
     }
   },
   "services": {
+    "preview_scene": {
+      "name": "Preview scene",
+      "description": "Play a bulb-compatible palette animation on NL45 or NL67 (firmware 5+, native effectV2) without saving it.",
+      "fields": {
+        "scene": { "name": "Scene UUID", "description": "UUID from the integration's downloaded scene database." },
+        "effect": { "name": "Animation" },
+        "transition": { "name": "Transition", "description": "Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24." },
+        "config_entry_id": { "name": "Integration entry ID" }
+      }
+    },
+    "upload_scene": {
+      "name": "Upload scene",
+      "description": "Save and verify an NL45 or NL67 palette animation. NL67 requires firmware 5+ and native effectV2. Enforces the 12-scene limit and never replaces an existing scene.",
+      "fields": {
+        "scene": { "name": "Scene UUID", "description": "UUID from the integration's downloaded scene database." },
+        "effect": { "name": "Animation" },
+        "transition": { "name": "Transition", "description": "Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24." },
+        "activate": { "name": "Activate after upload", "description": "Off by default. Activate only after successful readback verification." },
+        "config_entry_id": { "name": "Integration entry ID" }
+      }
+    },
     "set_circadian_config": {
       "name": "Configure circadian lighting",
       "description": "Store a complete white-point schedule on the bulb. Sunrise/sunset mode also copies Home Assistant's clock, timezone and location to the bulb.",

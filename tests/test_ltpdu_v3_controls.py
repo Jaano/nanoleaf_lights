@@ -8,7 +8,12 @@ from typing import Any
 
 import pytest
 
-from nl_ltpdu_v3 import V3Controls, parse_effects
+from nl_ltpdu_v3 import (
+    EFFECT_ID_MAX,
+    V3Controls,
+    build_effect_v2,
+    parse_effects,
+)
 
 
 def tlv(tag: int, data: bytes) -> bytes:
@@ -88,6 +93,81 @@ def test_full_effect_v2_parser() -> None:
         {"id": 0, "r": 254, "g": 1, "b": 2},
         {"id": 2, "r": 3, "g": 4, "b": 5},
     ]
+
+
+@pytest.mark.parametrize(("motion", "identifier"), [
+    ("fade", 65536), ("random", 262144), ("highlight", 327680),
+])
+async def test_native_scene_write_and_preview_wire_format(motion: str, identifier: int) -> None:
+    session = FakeSession({})
+    session._model = "NL67"
+    session._firmware_version = "5.1.45"
+    payload = build_effect_v2(
+        "ff00000000000000ff", 0x01020304, "Police 1", effect=motion, transition=17
+    )
+    options = tlv(1, tlv(2, b"\x01") + tlv(3, b"\x00\x11"))
+    if motion == "highlight":
+        options += tlv(1, tlv(2, b"\x05") + tlv(3, b"\x28"))
+    expected = (
+        tlv(3, SCENE_ID) + tlv(5, b"Police 1") + tlv(4, identifier.to_bytes(4, "big"))
+        + tlv(7, options)
+        + tlv(6, tlv(1, b"\x00") + tlv(2, bytes.fromhex("0000646400f06464")))
+        + tlv(11, b"\xff")
+    )
+    assert payload == expected
+    await session.preview_scene(payload, timeout=3)
+    assert await session.add_scene(payload, timeout=4) == SCENE_ID
+    assert session.requests == [
+        ("effect/display", expected, 1, 3),
+        ("effect", tlv(1, tlv(2, expected)), 1, 4),
+    ]
+
+
+def test_native_palette_filters_black_and_caps_seven_colors() -> None:
+    payload = build_effect_v2("000000" + "00ff00" * 8, 1, "Green", transition=600)
+    (detail,) = parse_effects(tlv(2, payload))
+    assert detail["palette_data"]["colors"] == [{"h": 120, "s": 100, "v": 100}] * 7
+    assert detail["motion_options"] == {"transTime": 600}
+
+
+@pytest.mark.parametrize("palette", ["", "000000", "ff000", "zzzzzz"])
+def test_native_encoder_rejects_invalid_palettes(palette: str) -> None:
+    with pytest.raises(ValueError):
+        build_effect_v2(palette, 1, "Invalid")
+
+
+@pytest.mark.parametrize("identifier", [-1, EFFECT_ID_MAX, 0xFFFFFFFF, True])
+def test_native_encoder_rejects_reserved_or_invalid_ids(identifier: int) -> None:
+    with pytest.raises(ValueError, match="scene ID"):
+        build_effect_v2("ff0000", identifier, "Invalid")
+
+
+@pytest.mark.parametrize("transition", [0, 601, True])
+def test_native_encoder_rejects_invalid_transitions(transition: int) -> None:
+    with pytest.raises(ValueError, match="transition"):
+        build_effect_v2("ff0000", 1, "Invalid", transition=transition)
+
+
+@pytest.mark.parametrize("name", ["", " ", "Name\x00"])
+def test_native_encoder_rejects_invalid_names(name: str) -> None:
+    with pytest.raises(ValueError, match="name"):
+        build_effect_v2("ff0000", 1, name)
+
+
+
+
+@pytest.mark.parametrize(("model", "firmware"), [
+    ("NL45", "1.6.49"), ("NL67", "4.1.0"), ("NL68", "5.1.45"),
+])
+async def test_native_writes_reject_unsupported_profiles(model: str, firmware: str) -> None:
+    session = FakeSession({})
+    session._model = model
+    session._firmware_version = firmware
+    payload = build_effect_v2("ff0000", 1, "Red")
+    for action in (session.preview_scene, session.add_scene):
+        with pytest.raises(NotImplementedError):
+            await action(payload)
+    assert session.requests == []
 
 
 @pytest.mark.parametrize(

@@ -94,6 +94,109 @@ The device's existing entities, history, and automations are preserved.
 
 New firmware supplies scene names directly. For older firmware, names are resolved from the local scene database. Use the **Refresh Scene Database** button entity to download the latest scene data from the Nanoleaf cloud. This download can take several minutes to complete. See [SCENES.md](SCENES.md) for how palette matching works.
 
+Place the scene catalogue at `config/www/nanoleaf-lights/scenes.json`.
+When present, the integration uses this file for lookups, scene preview/upload
+actions, and **Refresh Scene Database** downloads. A malformed catalogue does not
+cause the integration to select another file.
+
+### Custom Scene Upload Card
+
+The card is in [frontend/nanoleaf-scene-card.js](frontend/nanoleaf-scene-card.js).
+It stays in this repository and must be installed manually. It is not a separate
+HACS Dashboard package and is not automatically installed with the integration.
+It needs no build step or runtime dependencies.
+
+#### Manual installation
+
+The integration implements `nanoleaf_lights.preview_scene` and
+`nanoleaf_lights.upload_scene` for NL45 bulbs using the legacy protocol and NL67 bulbs
+with firmware 5+ using native effectV2 over LTPDUv3. Update the
+integration files and restart Home Assistant before testing these buttons.
+If the actions are missing, the card displays a warning and disables the buttons.
+Other models, older NL67 firmware, and unsupported transports are rejected without uploading.
+NL67 uploads are experimental: the encoding and endpoints are covered by offline tests,
+but live preview/upload testing remains pending.
+
+1. Create `config/www/nanoleaf-lights/` and copy `frontend/nanoleaf-scene-card.js`
+   to `config/www/nanoleaf-lights/nanoleaf-scene-card.js`.
+2. Place your downloaded scene catalogue at `config/www/nanoleaf-lights/scenes.json`.
+   The integration and card share this file, and **Refresh Scene Database** updates
+   it directly.
+   Copy only the scene database, never bulb configuration files or pairing tokens.
+   Files under `www` are served without authentication.
+3. In **Settings -> Dashboards -> Resources** (enable Advanced Mode in your profile
+   if needed), add `/local/nanoleaf-lights/nanoleaf-scene-card.js?v=3` as a **JavaScript module**.
+   For YAML-managed resources, use the equivalent `url` and `type: module` entry.
+4. Add a **Manual** dashboard card:
+
+   ```yaml
+   type: custom:nanoleaf-scene-card
+   entity: light.your_nanoleaf_bulb
+   title: Bedroom Scene Upload
+   scenes_url: /local/nanoleaf-lights/scenes.json
+   ```
+
+Restart Home Assistant if this is the first `www` directory. Load only one copy of
+the card.
+
+| Option | Required | Default |
+|---|---|---|
+| `entity` | Yes | None; select an integration light or light helper group |
+| `title` | No | `Nanoleaf Scene Upload` |
+| `scenes_url` | No | `/local/nanoleaf-lights/scenes.json` |
+
+The catalogue URL must use the Home Assistant origin. External URLs and redirects
+are rejected.
+
+Use the light entity created by this integration, not a separate Matter integration.
+The card also has a visual configuration editor. Reload the browser after deployment.
+When updating the JavaScript file, increment the resource query version to bypass caching.
+If migrating from the earlier flat `www` layout, update both the resource URL and
+the card's `scenes_url`. Only public frontend files belong in `www/nanoleaf-lights/`.
+
+Search matches scene names and UUIDs. Only the first 50 matches are rendered; refine the
+search for larger result sets. The card shows up to seven palette colors and provides
+Fade, Random, and Highlight animations. Transition is a protocol integer (0-255), not
+seconds. NL67 requires at least 1; the default 24 works for both models.
+The card exposes only 1-255 of the native effectV2 range 1-600.
+Upload does not activate the scene unless **Activate after upload** is checked.
+The existing light's effect list may include presets; the card does not treat its length
+as the number of saved user scenes.
+
+Light helper groups are supported. Uploads are sequential, not synchronized or atomic.
+If one bulb fails, earlier members may already have saved the scene.
+Check each bulb before retrying a failed upload.
+
+#### Scene actions
+
+The card calls these actions with `target: {entity_id: light.your_nanoleaf_bulb}`:
+
+| Action | Data |
+|---|---|
+| `nanoleaf_lights.preview_scene` | `scene` (catalogue UUID), `effect` (`fade`, `random`, `highlight`), `transition` (0-255) |
+| `nanoleaf_lights.upload_scene` | Same fields, plus `activate` (boolean, default false) |
+
+The backend resolves the UUID against the selected catalogue. It validates device support
+and motion parameters, serializes scene actions per device, enforces the NL45
+app-compatible 12-user-scene limit (excluding preset IDs 244-254), and selects an unused
+user ID. For NL67 it preserves four-byte IDs, conservatively counts every listed scene
+against the 12-scene limit, and refuses duplicate stored names. Native preset classification
+is not yet established, so no native IDs are excluded from that count.
+Native Highlight uses probability 40, rather than the legacy value 80.
+It never deletes or replaces existing scenes. Preview does not require a free
+storage slot.
+
+Upload checks the returned ID, reads the scene back, compares the encoded motion
+metadata and quantized palette, and refreshes the stored effect list before returning.
+Native uploads verify the requested ID, stored name, motion ID, sent options, and HSV
+palette. An acknowledgement alone is not treated as proof that the scene was saved.
+Activation is performed only after verification. Failures are reported as Home Assistant
+service errors. A timed-out upload is not automatically retried; check the bulb's scene
+list before retrying manually, since the first write may have succeeded.
+
+The card uses the existing `light.turn_on` action to play a stored effect. It reports
+backend action completion, not an independent frontend verification of bulb storage.
+
 ### Polling
 
 The integration polls light state every 5 seconds and optional settings every 60 seconds. Device info, scene lists, and motion capabilities are fetched after connecting. Session expiry triggers automatic re-authentication.
@@ -232,9 +335,25 @@ See [LTPDU.md](LTPDU.md) and [SCENES.md](SCENES.md) for protocol and palette det
 
 ### Running tests
 
+Run the offline Python suite without contacting bulbs:
+
 ```sh
-pip install pytest   # or: pip install -e ".[dev]"
-python -m pytest
+.venv/bin/python -m pytest --ignore=tests/test_device_integration.py -q
+```
+
+The offline suite groups protocol settings, protocol sessions, transport selection,
+Home Assistant entities/actions, coordinator settings, and scene workflows by purpose.
+Shared offline fixtures live in [tests/conftest.py](tests/conftest.py).
+
+Do not run bare `pytest` against paired bulbs.
+[tests/test_device_integration.py](tests/test_device_integration.py) is a separate
+live-device suite. It unpairs and re-pairs the bulb, persists a new token, changes
+light state, and deletes every stored scene. It restores light state, not scenes.
+Run it only deliberately against a disposable test bulb with an IPv6 device config
+and its pairing PIN:
+
+```sh
+NANOLEAF_CONF=test-bulb.json .venv/bin/python -m pytest tests/test_device_integration.py -q
 ```
 
 ---

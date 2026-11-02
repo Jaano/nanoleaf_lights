@@ -22,6 +22,8 @@ from nl_ltpdu import (
     SessionExpiredError,
     decode_palette_hex,
     palette_to_hex,
+    build_simple_scene_tlv as _build_simple_scene_tlv,
+    encode_palette_bytes as _encode_palette_bytes,
 )
 
 # Essentials (NL45/NL67) device palette is capped at 7 visible colors.
@@ -267,47 +269,10 @@ def encode_palette_bytes(
     Zero-brightness colors (bri=0) are dropped before truncation.  The
     remaining visible colors are truncated to *max_colors* (default 7).
     """
-    if not palette_hex or len(palette_hex) % 6 != 0:
-        sys.exit(
-            f"Error: palette hex length {len(palette_hex)} is not a multiple of 6"
-        )
     try:
-        hsb_list = decode_palette_hex(palette_hex)
+        return _encode_palette_bytes(palette_hex, max_colors, compact_repeats)
     except ValueError as e:
-        sys.exit(f"Error: invalid palette hex in scenes.json: {e}")
-    # Drop invisible (bri=0) entries — they are often zero-padding in scenes.json
-    # and produce 0x000000 packed words that the device treats as a terminator.
-    hsb_list = [(h, s, b) for h, s, b in hsb_list if b > 0]
-    if not hsb_list:
-        sys.exit("Error: palette has no visible colors (all entries have brightness=0)")
-    hsb_list = hsb_list[:max_colors]
-
-    if not compact_repeats:
-        parts: list[bytes] = []
-        for hue, sat, bri in hsb_list:
-            packed = (hue << 14) | (sat << 7) | bri
-            parts.append(bytes([(packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF]))
-        return bytes([len(hsb_list)]) + b"".join(parts)
-
-    # Compact run-length encoding: collapse identical consecutive HSB triples.
-    runs: list[tuple[tuple[int, int, int], int]] = []
-    i = 0
-    while i < len(hsb_list):
-        color = hsb_list[i]
-        count = 1
-        while i + count < len(hsb_list) and hsb_list[i + count] == color:
-            count += 1
-        runs.append((color, count))
-        i += count
-
-    parts = []
-    for (hue, sat, bri), count in runs:
-        has_repeat = 1 if count > 1 else 0
-        packed = (has_repeat << 23) | (hue << 14) | (sat << 7) | bri
-        parts.append(bytes([(packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF]))
-        if has_repeat:
-            parts.append(bytes([count & 0xFF]))
-    return bytes([len(runs)]) + b"".join(parts)
+        sys.exit(f"Error: {e}")
 
 
 def normalize_scene_palette(
@@ -361,29 +326,14 @@ def build_simple_scene_tlv(
 
     Defaults produce byte-for-byte identical output to the original FADE implementation.
     """
-    effect_code = _EFFECT_CODES.get(effect)
-    if effect_code is None:
-        sys.exit(f"Error: unknown effect {effect!r}; valid: {', '.join(_EFFECT_CODES)}")
-
-    loop_byte = 1 if loop else 0
-    if effect == "fade":
-        extra: list[int] = [transition, wait, loop_byte]
-    elif effect == "random":
-        extra = [transition, wait]
-    elif effect == "highlight":
-        extra = [transition, wait, main_probability]
-    elif effect == "stream":
-        extra = []
-    elif effect == "flow":
-        extra = [transition, wait, direction, loop_byte]
-    else:  # stripes
-        extra = [transition, direction, segment]
-
-    metadata = bytes([scene_id, effect_code] + extra)
-    tlv1_meta = bytes([0x01, len(metadata)]) + metadata
-    palette_bytes = encode_palette_bytes(palette_hex, max_colors=max_colors, compact_repeats=compact_repeats)
-    tlv1_palette = bytes([0x02, len(palette_bytes)]) + palette_bytes
-    return tlv1_meta + tlv1_palette
+    try:
+        return _build_simple_scene_tlv(
+            palette_hex, scene_id, effect=effect, transition=transition, wait=wait,
+            loop=loop, main_probability=main_probability, direction=direction,
+            segment=segment, max_colors=max_colors, compact_repeats=compact_repeats,
+        )
+    except ValueError as exc:
+        sys.exit(f"Error: {exc}")
 
 
 def _validate_effect_options(args: argparse.Namespace) -> None:

@@ -42,19 +42,10 @@ class TestFindSceneEffect:
         result = find_scene_effect(db, "aaaa")
         assert result["name"] == "Alpha"
 
-    def test_exact_name_match(self):
+    @pytest.mark.parametrize("query", ["Police 1", "police 1", "Police"])
+    def test_name_match(self, query: str) -> None:
         db = _db(_effect("aaaa", "Police 1", RED_HEX))
-        result = find_scene_effect(db, "Police 1")
-        assert result["uuid"] == "aaaa"
-
-    def test_exact_name_case_insensitive(self):
-        db = _db(_effect("aaaa", "Police 1", RED_HEX))
-        result = find_scene_effect(db, "police 1")
-        assert result["uuid"] == "aaaa"
-
-    def test_substring_match(self):
-        db = _db(_effect("aaaa", "Police 1", RED_HEX))
-        result = find_scene_effect(db, "Police")
+        result = find_scene_effect(db, query)
         assert result["uuid"] == "aaaa"
 
     def test_ambiguous_substring_exits(self):
@@ -138,30 +129,13 @@ class TestEncodePaletteBytes:
         cp = encode_palette_bytes(two_color, compact_repeats=True)
         assert nc == cp
 
-    def test_compact_with_repeats_smaller(self):
-        # 3 identical reds + 1 blue: compact collapses 3 reds into one entry+count
+    def test_compact_repeated_run(self) -> None:
         palette = RED_HEX * 3 + BLUE_HEX
         nc = encode_palette_bytes(palette)
         cp = encode_palette_bytes(palette, compact_repeats=True)
         assert len(cp) < len(nc)
-
-    def test_compact_count_byte_is_run_count(self):
-        # 3 reds (1 run) + 1 blue (1 run) → 2 runs
-        palette = RED_HEX * 3 + BLUE_HEX
-        cp = encode_palette_bytes(palette, compact_repeats=True)
         assert cp[0] == 2
-
-    def test_compact_bit23_set_for_run(self):
-        # The first entry (3 reds) should have bit23=1
-        palette = RED_HEX * 3 + BLUE_HEX
-        cp = encode_palette_bytes(palette, compact_repeats=True)
-        assert cp[1] & 0x80 != 0  # bit23 of first packed word
-
-    def test_compact_repeat_count_byte_present(self):
-        # 3 reds → entry: 3B packed + 1B count = 4B; then 1 blue (no repeat): 3B
-        # total: 1 (count) + 4 + 3 = 8 bytes
-        palette = RED_HEX * 3 + BLUE_HEX
-        cp = encode_palette_bytes(palette, compact_repeats=True)
+        assert cp[1] & 0x80 != 0
         assert len(cp) == 8
 
 
@@ -171,10 +145,8 @@ class TestEncodePaletteBytes:
 
 
 class TestNormalizeScenePalette:
-    def test_same_palette_same_result(self):
-        a = normalize_scene_palette(RED_HEX + BLUE_HEX)
-        b = normalize_scene_palette(RED_HEX + BLUE_HEX)
-        assert a == b
+    def test_visible_palette_round_trip(self) -> None:
+        assert normalize_scene_palette(RED_HEX + BLUE_HEX) == "ff00000000ff"
 
     def test_bri_zero_filtered(self):
         with_black = BLACK_HEX + RED_HEX

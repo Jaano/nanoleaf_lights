@@ -1,6 +1,6 @@
 """Offline settings coordination, schedule validation and HA temperature tests."""
 
-# ruff: noqa: ANN001, ANN201, ANN202, F811
+# ruff: noqa: ANN001, ANN201, ANN202
 
 import asyncio
 from datetime import UTC, datetime
@@ -9,8 +9,6 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-
-from tests.test_session_factory import factory, ha_modules  # noqa: F401 -- pytest fixtures
 
 
 @pytest.fixture
@@ -412,22 +410,3 @@ async def test_motion_action_queries_device_and_updates_sensor_data(settings):
     result = await coordinator.async_get_motion_capabilities()
     device.query_motion_capabilities.assert_awaited_once()
     assert coordinator.data["motion_capabilities"] == result
-
-
-@pytest.mark.parametrize(("firmware", "minimum"), [("5.1.45", 2100), ("4.1.3", 2127)])
-async def test_light_white_temperature_bounds_and_write_agree(ha_modules, firmware, minimum):
-    device = SimpleNamespace(set_light_state=AsyncMock())
-
-    async def call(action):
-        await action(device)
-
-    light = ha_modules.light.NanoleafLtpduLight.__new__(ha_modules.light.NanoleafLtpduLight)
-    light.coordinator = SimpleNamespace(
-        config_entry=SimpleNamespace(data={"model": "NL67"}),
-        data={"device": {"model_number": "NL67", "firmware_version": firmware}},
-        async_service_call=call,
-        async_request_refresh=AsyncMock(),
-    )
-    assert light.min_color_temp_kelvin == minimum
-    await light.async_turn_on(color_temp_kelvin=2100)
-    device.set_light_state.assert_awaited_once_with(on=True, color_temp=minimum)

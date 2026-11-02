@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -25,20 +27,36 @@ from .const import (
     CONF_PORT,
     CONF_TOKEN,
     DOMAIN,
+    PUBLIC_SCENES_DIR,
     SCENES_FILENAME,
     STORAGE_DIR,
     UPDATE_INTERVAL,
 )
-from .nl_ltpdu import AuthRejectedError, SceneLookup, SessionExpiredError
-from .nl_ltpdu_v3 import device_capabilities
+from .nl_ltpdu import (
+    AuthRejectedError,
+    LtpduSession,
+    SceneLookup,
+    SessionExpiredError,
+    _parse_scene_data,
+    build_simple_scene_tlv,
+)
+from .nl_ltpdu_v3 import (
+    EFFECT_ID_MAX,
+    LtpduV3Session,
+    _parse_effect,
+    build_effect_v2,
+    device_capabilities,
+)
 from .session import connect_session, scene_fallback_name, scene_handle_bytes
 
 if TYPE_CHECKING:
     from .session import Session
 
 _LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 _SETTINGS_INTERVAL = 60.0
 _THREAD_INTERVAL = 60.0
+_SCENE_LIMIT = 12
 _THREAD_QUERIES = {
     "capabilities": "query_thread_capabilities",
     "role": "query_thread_role",
@@ -92,6 +110,35 @@ def _circadian_config(config: dict[str, Any], *, to_device: bool) -> dict[str, A
     }
 
 
+def _select_scenes_path(config_dir: Path) -> Path:
+    public_path = config_dir / "www" / PUBLIC_SCENES_DIR / SCENES_FILENAME
+    private_path = config_dir / ".storage" / STORAGE_DIR / SCENES_FILENAME
+    if public_path.is_file() or not private_path.is_file():
+        return public_path
+    return private_path
+
+
+def _load_scene_entry(path: Path, scene_uuid: str) -> tuple[str, str]:
+    with path.open(encoding="utf-8") as file:
+        database = json.load(file)
+    if not isinstance(database, dict) or not isinstance(database.get("effects"), list):
+        raise ValueError("Scene database must contain an effects array")
+    matches = [
+        entry for entry in database["effects"]
+        if isinstance(entry, dict) and entry.get("uuid") == scene_uuid
+    ]
+    if len(matches) != 1:
+        raise ValueError("Scene UUID is missing or ambiguous; refresh the scene database")
+    entry = matches[0]
+    name = entry.get("name")
+    palette = entry.get("palette")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Scene has no valid name")
+    if not isinstance(palette, str):
+        raise ValueError("Scene has no RGB palette")
+    return name, palette
+
+
 class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator that holds one persistent LTPDU session per device.
 
@@ -117,12 +164,13 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._consecutive_auth_failures: int = 0
         self._AUTH_FAILURE_THRESHOLD = 3
         self.scenes_path: Path = (
-            Path(hass.config.config_dir) / ".storage" / STORAGE_DIR / SCENES_FILENAME
+            Path(hass.config.config_dir) / "www" / PUBLIC_SCENES_DIR / SCENES_FILENAME
         )
         self._scene_lookup: SceneLookup | None = None
         self._settings_updated_at = 0.0
         self._thread_updated_at = 0.0
         self._settings_lock = asyncio.Lock()
+        self._scene_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Session helpers
@@ -308,7 +356,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch device state; re-open session when needed."""
         if self._scene_lookup is None:
-            self._scene_lookup = await SceneLookup.from_path_async(self.scenes_path)
+            await self.async_reload_scenes()
 
         if self._session is None:
             try:
@@ -396,8 +444,8 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def async_service_call(
-        self, action: Callable[[Session], Coroutine[Any, Any, None]]
-    ) -> None:
+        self, action: Callable[[Session], Coroutine[Any, Any, _T]]
+    ) -> _T:
         """Execute *action(session)*, opening or reauthenticating as needed.
 
         Raises HomeAssistantError on unrecoverable failure so the caller
@@ -410,14 +458,16 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise HomeAssistantError(f"Device unavailable: {exc}") from exc
 
         try:
-            await action(self._session)
+            return await action(self._session)
         except SessionExpiredError:
             try:
                 await self._session.reauth()
-                await action(self._session)
+                return await action(self._session)
             except Exception as exc:
                 await self._safe_close()
                 raise HomeAssistantError(f"Session error: {exc}") from exc
+        except HomeAssistantError:
+            raise
         except Exception as exc:
             await self._safe_close()
             raise HomeAssistantError(f"Command failed: {exc}") from exc
@@ -425,6 +475,230 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _require_feature(self, feature: str) -> None:
         if not (self.data or {}).get("capabilities", {}).get(feature):
             raise HomeAssistantError(f"This device does not support {feature}")
+
+    async def _scene_call(
+        self, action: Callable[[LtpduSession], Coroutine[Any, Any, _T]]
+    ) -> _T:
+        async def execute(session: Session) -> _T:
+            if not isinstance(session, LtpduSession):
+                raise HomeAssistantError("Scene upload requires the NL45 legacy protocol")
+            return await action(session)
+
+        return await self.async_service_call(execute)
+
+    async def _native_scene_call(
+        self, action: Callable[[LtpduV3Session], Coroutine[Any, Any, _T]]
+    ) -> _T:
+        async def execute(session: Session) -> _T:
+            if not isinstance(session, LtpduV3Session):
+                raise HomeAssistantError("NL67 scene upload requires native effectV2 over LTPDUv3")
+            return await action(session)
+
+        return await self.async_service_call(execute)
+
+    async def async_scene_action(
+        self,
+        scene: str,
+        effect: str,
+        transition: int,
+        *,
+        upload: bool,
+        activate: bool = False,
+    ) -> None:
+        """Preview or save a supported palette animation without replacing scenes."""
+        self._require_feature("scene_upload")
+        if effect not in {"fade", "random", "highlight"}:
+            raise HomeAssistantError("Unsupported scene animation")
+        if type(transition) is not int or not 0 <= transition <= 255:
+            raise HomeAssistantError("Transition must be an integer from 0 to 255")
+        if activate and not upload:
+            raise HomeAssistantError("Activation is only available after upload")
+        try:
+            scenes_path = await self.async_select_scenes_path()
+            source: tuple[str, str] = await self.hass.async_add_executor_job(
+                _load_scene_entry, scenes_path, scene
+            )
+            name, palette = source
+            native = (self.data or {}).get("capabilities", {}).get("scene_protocol") == "effectV2"
+            payload = (
+                build_effect_v2(palette, 1, name, effect=effect, transition=transition)
+                if native else
+                build_simple_scene_tlv(palette, 1, effect=effect, transition=transition)
+            )
+        except (OSError, ValueError) as exc:
+            raise HomeAssistantError(f"Cannot prepare scene: {exc}") from exc
+
+        async with self._scene_lock:
+            if native:
+                motions = await self._native_scene_call(
+                    lambda session: session.query_motion_capabilities()
+                )
+                expected = _parse_effect(payload)
+                if expected["motion_id"] not in {
+                    motion["id"] for motion in motions["motions"]
+                }:
+                    raise HomeAssistantError("The bulb does not support this scene animation")
+                if upload:
+                    await self._upload_effect_v2(
+                        name, palette, effect, transition, activate=activate
+                    )
+                else:
+                    await self._native_scene_call(lambda session: session.preview_scene(payload))
+            elif upload:
+                await self._upload_scene(name, palette, effect, transition, activate=activate)
+            else:
+                await self._scene_call(lambda session: session.preview_scene(payload))
+            await self.async_request_refresh()
+
+    async def _allocate_effect_id(self, handles: list[bytes], name: str) -> bytes:
+        if any(len(handle) != 4 for handle in handles) or len(set(handles)) != len(handles):
+            raise HomeAssistantError("Invalid native scene ID list; upload was not attempted")
+        if len(handles) >= _SCENE_LIMIT:
+            raise HomeAssistantError("NL67 scene storage is full (12 listed scenes)")
+        for handle in handles:
+            detail = await self._native_scene_call(
+                lambda session, identifier=handle: session.get_scene(identifier)
+            )
+            if not detail or not detail.get("name"):
+                raise HomeAssistantError(
+                    "Cannot check existing scene names; upload was not attempted"
+                )
+            if detail["name"] == name:
+                raise HomeAssistantError(
+                    "A scene with this name already exists; upload was not attempted"
+                )
+        identifier = secrets.randbelow(EFFECT_ID_MAX - 1) + 1
+        while identifier.to_bytes(4, "big") in handles:
+            identifier = identifier % (EFFECT_ID_MAX - 1) + 1
+        return identifier.to_bytes(4, "big")
+
+    async def _upload_effect_v2(
+        self, name: str, palette: str, effect: str, transition: int, *, activate: bool
+    ) -> None:
+        handles = await self._native_scene_call(lambda session: session.list_scenes())
+        assigned = await self._allocate_effect_id(handles, name)
+        payload = build_effect_v2(
+            palette, int.from_bytes(assigned, "big"), name, effect=effect, transition=transition
+        )
+        expected = _parse_effect(payload)
+        try:
+            returned = await self._native_scene_call(lambda session: session.add_scene(payload))
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"Upload failed or its outcome is unknown: {exc}. "
+                "Check the bulb's scene list before retrying"
+            ) from exc
+        if returned != assigned:
+            raise HomeAssistantError(
+                "Upload returned an unexpected scene ID; check the bulb before retrying"
+            )
+        try:
+            detail = await self._native_scene_call(lambda session: session.get_scene(assigned))
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"Scene was uploaded but readback failed: {exc}. Check the bulb before retrying"
+            ) from exc
+        if not detail or any(
+            detail.get(key) != expected[key] for key in ("id", "name", "motion_id", "palette_data")
+        ) or not isinstance(detail.get("motion_options"), dict) or any(
+            detail.get("motion_options", {}).get(key) != value
+            for key, value in expected["motion_options"].items()
+        ):
+            raise HomeAssistantError(
+                "Scene was uploaded but readback verification failed; "
+                "check the bulb before retrying"
+            )
+        try:
+            refreshed = await self._native_scene_call(lambda session: session.list_scenes())
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"Scene was uploaded and verified, but refreshing the scene list failed: {exc}"
+            ) from exc
+        if assigned not in refreshed or not set(handles).issubset(refreshed):
+            raise HomeAssistantError(
+                "Scene was uploaded but the stored scene list changed unexpectedly; "
+                "check the bulb before retrying"
+            )
+        existing = self.data or {}
+        names = {
+            handle: existing.get("scene_names", {}).get(handle, scene_fallback_name(handle))
+            for handle in refreshed
+        }
+        names[assigned] = name
+        self.async_set_updated_data(
+            {**existing, "scene_handles": refreshed, "scene_names": names}
+        )
+        if activate:
+            try:
+                await self._native_scene_call(lambda session: session.play_scene(assigned))
+            except HomeAssistantError as exc:
+                raise HomeAssistantError(
+                    f"Scene was saved and verified, but activation failed: {exc}"
+                ) from exc
+
+    async def _upload_scene(
+        self, name: str, palette: str, effect: str, transition: int, *, activate: bool
+    ) -> None:
+        handles = await self._scene_call(lambda session: session.list_scenes())
+        occupied = set(handles)
+        user_ids = occupied.intersection(range(1, 244))
+        if len(user_ids) >= _SCENE_LIMIT:
+            raise HomeAssistantError("NL45 scene storage is full (12 saved user scenes)")
+        scene_id = next(identifier for identifier in range(1, 244) if identifier not in occupied)
+        payload = build_simple_scene_tlv(palette, scene_id, effect=effect, transition=transition)
+        # Each step has its own session recovery. Readback never retries the write.
+        try:
+            assigned = await self._scene_call(lambda session: session.add_scene(payload))
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"Upload failed or its outcome is unknown: {exc}. "
+                "Check the bulb's scene list before retrying"
+            ) from exc
+        if len(assigned) != 1 or not 1 <= assigned[0] <= 243 or assigned[0] in occupied:
+            raise HomeAssistantError(
+                "Upload returned an invalid or occupied scene ID; "
+                "the scene may have been saved. Check the bulb before retrying"
+            )
+        expected = _parse_scene_data(payload[:2] + assigned + payload[3:])
+        try:
+            detail = await self._scene_call(lambda session: session.get_scene(assigned))
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"Scene was uploaded but readback failed: {exc}. "
+                "Check the bulb before retrying"
+            ) from exc
+        if not expected or not detail or any(
+            detail.get(key) != expected[key] for key in ("metadata", "palette")
+        ):
+            raise HomeAssistantError(
+                "Scene was uploaded but readback verification failed; "
+                "check the bulb before retrying"
+            )
+        try:
+            handles = await self._scene_call(lambda session: session.list_scenes())
+        except HomeAssistantError as exc:
+            raise HomeAssistantError(
+                f"Scene was uploaded and verified, but refreshing the scene list failed: {exc}"
+            ) from exc
+        if assigned[0] not in handles:
+            raise HomeAssistantError("Uploaded scene is missing from the bulb's scene list")
+        existing = self.data or {}
+        scene_handles = [bytes([identifier]) for identifier in handles]
+        names = {
+            handle: existing.get("scene_names", {}).get(handle, scene_fallback_name(handle))
+            for handle in scene_handles
+        }
+        names[assigned] = name
+        self.async_set_updated_data(
+            {**existing, "scene_handles": scene_handles, "scene_names": names}
+        )
+        if activate:
+            try:
+                await self._scene_call(lambda session: session.play_scene(assigned))
+            except HomeAssistantError as exc:
+                raise HomeAssistantError(
+                    f"Scene was saved and verified, but activation failed: {exc}"
+                ) from exc
 
     async def _settings_call(
         self, action: Callable[[Session], Coroutine[Any, Any, None]], groups: set[str]
@@ -549,9 +823,21 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_set_updated_data({**(self.data or {}), "motion_capabilities": result})
         return result
 
+    async def async_select_scenes_path(self) -> Path:
+        """Select the catalogue by file presence without blocking the event loop."""
+        path: Path = await self.hass.async_add_executor_job(
+            _select_scenes_path, Path(self.hass.config.config_dir)
+        )
+        if path != self.scenes_path:
+            self.scenes_path = path
+            self._scene_lookup = None
+        _LOGGER.debug("Using scene database: %s", path)
+        return path
+
     async def async_reload_scenes(self) -> None:
         """Reload the scene lookup after scenes.json has been updated."""
-        self._scene_lookup = await SceneLookup.from_path_async(self.scenes_path)
+        scenes_path = await self.async_select_scenes_path()
+        self._scene_lookup = await SceneLookup.from_path_async(scenes_path)
         existing = self.data or {}
         scene_handles: list[bytes] = existing.get("scene_handles", [])
         scene_names: dict[bytes, str] = {}

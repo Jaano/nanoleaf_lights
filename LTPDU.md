@@ -240,10 +240,39 @@ The repeat-count extension is optional — devices accept plain (non-repeated) e
 |---|---|---|
 | NL45 (HomeKit Essentials) | any | `ci` endpoint, tag `0x0702` |
 | NL67 (Matter Essentials) | < 5.0.0 | `ci` endpoint, tag `0x0702` |
-| NL67 (Matter Essentials) | ≥ 5.0.0 | Matter attribute write (EFFECT_V2 UUID `A18E6901-…`); `ci` + `0x0702` still accepted empirically |
+| NL67 (Matter Essentials) | ≥ 5.0.0 | Native LTPDUv3 `POST effect` (effectV2); legacy `ci` + `0x0702` still accepted empirically over CoAP |
 
 Scenes are not accessible via the Matter data model. The `ci` endpoint is
 LTPDU-only.
+
+### Native effectV2 writes (NL67 firmware 5+)
+
+Saving uses `POST effect` with tag 1 (effectList) containing tag 2 (effectData).
+Preview uses `POST effect/display` with bare effectData, without those wrappers.
+These are authenticated LTPDU endpoints, not Matter attribute writes.
+
+EffectData uses an 8-bit tag and 16-bit big-endian length:
+
+| Tag | Value |
+|---|---|
+| 3 | Effect ID, uint32 big-endian |
+| 5 | Scene name, UTF-8 |
+| 4 | Motion ID, uint32 big-endian |
+| 7 | Motion options: repeated tag 1 records, each containing option code in tag 2 and value in tag 3 |
+| 6 | Palette: tag 1 = `00` (HSV), tag 2 = colors (`hue:u16`, `saturation:u8`, `value:u8`) |
+| 11 | Fixture IDs; `ff` broadcasts preview to all fixtures |
+
+Essentials uses up to seven visible HSV colors. Fade/random/highlight motion IDs are
+65536/262144/327680. Transition (option 1) is uint16, range 1-600. Highlight probability
+(option 5) is uint8, default 40. The integration selects an unused effect ID below
+`0xfffeffff` and never replaces a stored name.
+
+The integration conservatively counts all native listed IDs against its 12-scene limit.
+Native preset classification is unresolved. Save success requires GET `effect` readback
+and GET `effect/ids` verification, not just a write acknowledgement.
+
+This native write path is statically verified and covered by offline tests.
+Live NL67 preview/upload confirmation remains pending.
 
 See [SCENES.md](SCENES.md) for scene name resolution and the cloud palette format.
 

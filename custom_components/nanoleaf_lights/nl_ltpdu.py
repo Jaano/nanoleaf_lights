@@ -304,6 +304,67 @@ def decode_palette_hex(hex_str: str) -> list[tuple[int, int, int]]:
     return result
 
 
+def encode_palette_bytes(
+    palette_hex: str, max_colors: int = 7, compact_repeats: bool = False
+) -> bytes:
+    """Encode visible RGB colors as compact HSB entries for an Essentials scene."""
+    if not palette_hex or len(palette_hex) % 6:
+        raise ValueError(f"palette hex length {len(palette_hex)} is not a multiple of 6")
+    if not 1 <= max_colors <= 255:
+        raise ValueError("max_colors must be between 1 and 255")
+    colors = [color for color in decode_palette_hex(palette_hex) if color[2] > 0][:max_colors]
+    if not colors:
+        raise ValueError("palette has no visible colors (all entries have brightness=0)")
+    runs: list[tuple[tuple[int, int, int], int]] = []
+    for color in colors:
+        if compact_repeats and runs and runs[-1][0] == color:
+            runs[-1] = (color, runs[-1][1] + 1)
+        else:
+            runs.append((color, 1))
+    parts: list[bytes] = []
+    for (hue, saturation, brightness), count in runs:
+        packed = (int(count > 1) << 23) | (hue << 14) | (saturation << 7) | brightness
+        parts.append(packed.to_bytes(3, "big"))
+        if count > 1:
+            parts.append(bytes([count]))
+    return bytes([len(runs)]) + b"".join(parts)
+
+
+def build_simple_scene_tlv(
+    palette_hex: str,
+    scene_id: int,
+    *,
+    effect: str = "fade",
+    transition: int = 24,
+    wait: int = 0,
+    loop: bool = True,
+    main_probability: int = 80,
+    direction: int = 0,
+    segment: int = 50,
+    max_colors: int = 7,
+    compact_repeats: bool = False,
+) -> bytes:
+    """Build a TLV8 scene payload without CLI side effects."""
+    codes = {"fade": 1, "random": 2, "highlight": 3, "stream": 4, "flow": 5, "stripes": 6}
+    if effect not in codes:
+        raise ValueError(f"unknown effect {effect!r}; valid: {', '.join(codes)}")
+    if effect == "fade":
+        extra = [transition, wait, int(loop)]
+    elif effect == "random":
+        extra = [transition, wait]
+    elif effect == "highlight":
+        extra = [transition, wait, main_probability]
+    elif effect == "stream":
+        extra = []
+    elif effect == "flow":
+        extra = [transition, wait, direction, int(loop)]
+    else:
+        extra = [transition, direction, segment]
+    metadata = bytes([scene_id, codes[effect], *extra])
+    palette = encode_palette_bytes(palette_hex, max_colors, compact_repeats)
+    return bytes([1, len(metadata)]) + metadata + bytes([2, len(palette)]) + palette
+
+
 # Scene data parsing
 
 
@@ -334,6 +395,7 @@ def _parse_scene_data(raw: bytes) -> dict[str, Any] | None:
     result: dict[str, Any] = {}
 
     meta = tlv.get(0x01, b"")
+    result["metadata"] = meta
     if len(meta) >= 4:
         result["effect_type"] = meta[1]
         result["transition_time"] = meta[2]
@@ -1552,7 +1614,7 @@ class LtpduSession:
             timeout:  Per-request timeout in seconds.
 
         Returns:
-            Parsed scene dict with keys ``effect_type``, ``transition_time``,
+            Parsed scene dict with keys ``metadata``, ``effect_type``, ``transition_time``,
             ``wait_time``, and ``palette`` (concatenated rrggbb hex string),
             or None if the raw payload is empty.
 

@@ -58,7 +58,7 @@ class NanoleafRefreshScenesButton(NanoleafLtpduEntity, ButtonEntity):  # type: i
 
     async def async_press(self) -> None:
         """Download updated scene data from the Nanoleaf cloud and reload names."""
-        scenes_path = self.coordinator.scenes_path
+        scenes_path = await self.coordinator.async_select_scenes_path()
         api = NanoleafCloudApi()
         await self.hass.async_add_executor_job(api.build_scenes, scenes_path)
         await self.coordinator.async_reload_scenes()
