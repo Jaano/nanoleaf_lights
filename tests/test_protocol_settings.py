@@ -494,6 +494,31 @@ async def test_legacy_request_rejects_operation_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_light_state_tolerates_rejected_color_temperature() -> None:
+    session = make_session("NL62", "1.6.49")
+    session.get_ltpdu.return_value = (
+        response("lb/0/oo", b"\x00\x01") + response("lb/0/pb", b"\x00\x32")
+        + response("lb/0/hu", b"\x00\x78") + response("lb/0/sa", b"\x00\x64")
+        + response("lb/0/ct", status=4)
+    )
+    assert await session.query_light_state() == {
+        "power": True, "brightness": 50, "hue": 120, "saturation": 100, "color_temp": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_light_state_rejects_required_endpoint_error() -> None:
+    session = make_session("NL62", "1.6.49")
+    session.get_ltpdu.return_value = (
+        response("lb/0/oo", status=4) + response("lb/0/pb", b"\x00\x32")
+        + response("lb/0/hu", b"\x00\x78") + response("lb/0/sa", b"\x00\x64")
+        + response("lb/0/ct", b"\x00\x00\x0a\x8c")
+    )
+    with pytest.raises(RuntimeError, match="lb/0/oo.*status 0x04"):
+        await session.query_light_state()
+
+
+@pytest.mark.asyncio
 async def test_legacy_request_rejects_unsupported_method_before_sending() -> None:
     session = make_session()
     with pytest.raises(ValueError, match="GET or POST"):

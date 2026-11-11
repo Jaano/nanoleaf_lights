@@ -1316,7 +1316,7 @@ class LtpduSession:
               - ``brightness``  : int   — 0-100
               - ``hue``         : int   — 0-360
               - ``saturation``  : int   — 0-100
-              - ``color_temp``  : int   — color temperature in Kelvin
+              - ``color_temp``  : int | None — Kelvin; None if ``lb/0/ct`` is rejected (NL62)
 
         .. note:: **NL67 LTPDU value widths**
 
@@ -1337,7 +1337,7 @@ class LtpduSession:
 
         # Parse concatenated response pairs:
         #   TLV(0x0001, path) + TLV(0x0003, status + data)
-        def _parse_next(buf: bytes, off: int, ep: bytes) -> tuple[bytes, int]:
+        def _parse_next(buf: bytes, off: int, ep: bytes) -> tuple[bytes | None, int]:
             """Return (value_bytes, new_offset) for one endpoint pair."""
             if off + 4 > len(buf):
                 raise RuntimeError(f"query_light_state: truncated at offset {off}")
@@ -1360,6 +1360,9 @@ class LtpduSession:
                 raise RuntimeError(f"query_light_state: empty 0x0003 for {ep!r}")
             status = dval[0]
             if status != 0x00:
+                if ep == b"lb/0/ct":
+                    _LOGGER.debug("query_light_state: lb/0/ct status 0x%02x", status)
+                    return None, off
                 raise RuntimeError(
                     f"query_light_state: {ep!r} returned status 0x{status:02x}"
                 )
@@ -1369,7 +1372,8 @@ class LtpduSession:
         values: dict[bytes, bytes] = {}
         for ep in endpoints:
             val, off = _parse_next(resp, off, ep)
-            values[ep] = val
+            if val is not None:
+                values[ep] = val
 
         def _u16(b: bytes) -> int:
             return int.from_bytes(b[:2], "big")
@@ -1377,12 +1381,13 @@ class LtpduSession:
         def _uint(b: bytes) -> int:
             return int.from_bytes(b, "big")
 
+        ct = values.get(b"lb/0/ct")
         return {
             "power": bool(_uint(values[b"lb/0/oo"])),
             "brightness": _u16(values[b"lb/0/pb"]),
             "hue": _u16(values[b"lb/0/hu"]),
             "saturation": _u16(values[b"lb/0/sa"]),
-            "color_temp": _uint(values[b"lb/0/ct"]),
+            "color_temp": None if ct is None else _uint(ct),
         }
 
     # -- Write light parameters

@@ -109,6 +109,8 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
 
     @property
     def color_mode(self) -> ColorMode:
+        if self._light and self._light.get("color_temp") is None:
+            return ColorMode.HS
         return self._color_mode
 
     @property
