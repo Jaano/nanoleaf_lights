@@ -154,6 +154,8 @@ def ha_modules(factory, monkeypatch):
         UpdateFailed=RuntimeError,
     )
     register("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
+    register("homeassistant.util")
+    register("homeassistant.util.color", color_temperature_to_hs=lambda kelvin: (30.0, 20.0))
     register("homeassistant.helpers.device_registry")
     register("homeassistant.helpers.selector")
     register("voluptuous", Schema=lambda mapping: mapping, Optional=SchemaKey, Required=SchemaKey)
@@ -169,9 +171,18 @@ def ha_modules(factory, monkeypatch):
         LightEntityFeature=SimpleNamespace(EFFECT=1),
     )
     legacy = sys.modules[f"{factory.package}.nl_ltpdu"]
-    from nl_ltpdu import _parse_scene_data, build_simple_scene_tlv
+    from nl_ltpdu import (
+        SCENE_DIRECTIONS,
+        EndpointStatusError,
+        _parse_scene_data,
+        build_simple_scene_tlv,
+        preset_scene_name,
+    )
     legacy._parse_scene_data = _parse_scene_data
     legacy.build_simple_scene_tlv = build_simple_scene_tlv
+    legacy.EndpointStatusError = EndpointStatusError
+    legacy.preset_scene_name = preset_scene_name
+    legacy.SCENE_DIRECTIONS = SCENE_DIRECTIONS
     legacy.SceneLookup = object
     legacy.SessionExpiredError = type("SessionExpiredError", (RuntimeError,), {})
     register(f"{factory.package}.entity", NanoleafLtpduEntity=type("NanoleafEntity", (), {}))

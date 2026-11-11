@@ -9,10 +9,15 @@ import json
 import logging
 import re
 import struct
+import sys
 from pathlib import Path
 from typing import Any, cast
 
 import aiocoap
+
+# Preload the CoAP transport modules at import time so aiocoap does not import them
+# (and scan sys.path) on the event loop when the first session opens.
+import aiocoap.transports.simple6
 from cryptography.hazmat.primitives import ciphers, hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
@@ -20,6 +25,14 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 )
 from zeroconf import IPVersion, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
+
+if sys.platform == "linux":
+    # udp6 relies on Linux-only socket options, so only import it there.
+    import aiocoap.transports.udp6
+
+# Only plain coap:// is used. Naming the transport skips aiocoap's default-transport
+# probing, which tries to import optional packages and scans sys.path on the event loop.
+_COAP_TRANSPORTS: list[str] = ["udp6"] if sys.platform == "linux" else ["simple6"]
 
 # Models confirmed to use the legacy "og" key derivation.
 _LEGACY_MODELS: frozenset[str] = frozenset({"NL45", "NL55", "NL58", "NL62"})
@@ -330,6 +343,10 @@ def encode_palette_bytes(
     return bytes([len(runs)]) + b"".join(parts)
 
 
+# Direction byte of the flow and stripes effects (the app's linearDirectionTypeToInt).
+SCENE_DIRECTIONS: dict[str, int] = {"left": 0, "right": 1, "up": 2, "down": 3}
+
+
 def build_simple_scene_tlv(
     palette_hex: str,
     scene_id: int,
@@ -429,6 +446,30 @@ def _parse_scene_data(raw: bytes) -> dict[str, Any] | None:
 # Scene name lookup
 
 _SCENES_PATH = Path(__file__).parent / "scenes.json"
+
+# Fixed Secretlab MAGRGB (NL62) preset scenes. The Nanoleaf app names these by scene ID,
+# not by palette, and they are not in the cloud scene database. IDs 244-249 are written
+# by the app at pairing; 250-254 are named by the app too but not written by it.
+SECRETLAB_SCENE_NAMES: dict[int, str] = {
+    244: "Cyberpunk 2077",
+    245: "VALORANT",
+    246: "Assassin's Creed",
+    247: "Dark Knight",
+    248: "The Joker",
+    249: "Attack on Titan",
+    250: "Northern Lights",
+    251: "Secretlab Signature",
+    252: "Cloud9",
+    253: "Team Liquid",
+    254: "Hip Hop",
+}
+
+
+def preset_scene_name(model: str | None, handle: bytes) -> str | None:
+    """Return the app's fixed name for a model-specific preset scene ID, if any."""
+    if (model or "").upper() == "NL62" and len(handle) == 1:
+        return SECRETLAB_SCENE_NAMES.get(handle[0])
+    return None
 
 
 class SceneLookup:
@@ -538,6 +579,18 @@ class AuthRejectedError(RuntimeError):
     """The device rejected the stored access token (re-pairing required)."""
 
 
+class EndpointStatusError(RuntimeError):
+    """The device answered, but rejected one endpoint with a non-zero status.
+
+    The session is healthy; only that endpoint is unsupported or refused.
+    """
+
+    def __init__(self, endpoint: str, status: int, prefix: str = "") -> None:
+        super().__init__(f"{prefix}{endpoint} returned status 0x{status:02x}")
+        self.endpoint = endpoint
+        self.status = status
+
+
 class LtpduSession:
     """Holds state for one authenticated LTPDU session with a device.
 
@@ -640,7 +693,7 @@ class LtpduSession:
         )
 
         # POST our public key to /nlsecure
-        coap_ctx = await aiocoap.Context.create_client_context()
+        coap_ctx = await aiocoap.Context.create_client_context(transports=_COAP_TRANSPORTS)
         owns_context = True
         try:
             uri = _coap_uri(ip_address, port, "/nlsecure")
@@ -1236,7 +1289,7 @@ class LtpduSession:
         if tag != 3 or data_length != len(status_value) or not status_value:
             raise RuntimeError(f"{endpoint}: invalid response status")
         if status_value[0] != 0:
-            raise RuntimeError(f"{endpoint} returned status 0x{status_value[0]:02x}")
+            raise EndpointStatusError(endpoint, status_value[0])
         return status_value[1:]
 
     async def query_capabilities(self, timeout: float = 10.0) -> dict[str, Any]:
@@ -1363,9 +1416,7 @@ class LtpduSession:
                 if ep == b"lb/0/ct":
                     _LOGGER.debug("query_light_state: lb/0/ct status 0x%02x", status)
                     return None, off
-                raise RuntimeError(
-                    f"query_light_state: {ep!r} returned status 0x{status:02x}"
-                )
+                raise EndpointStatusError(ep.decode(), status, prefix="query_light_state: ")
             return dval[1:], off
 
         off = 0

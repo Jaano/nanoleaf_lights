@@ -410,3 +410,143 @@ async def test_motion_action_queries_device_and_updates_sensor_data(settings):
     result = await coordinator.async_get_motion_capabilities()
     device.query_motion_capabilities.assert_awaited_once()
     assert coordinator.data["motion_capabilities"] == result
+
+
+# -- Device-rejected endpoints keep the session ------------------------------------------
+
+
+def _rejection(ha_modules, endpoint: str = "lb/0/ct", status: int = 4):
+    from nl_ltpdu import EndpointStatusError
+
+    return EndpointStatusError(endpoint, status)
+
+
+async def test_poll_endpoint_rejection_keeps_session_and_next_poll_reuses_it(settings, ha_modules):
+    coordinator, device = settings
+    device.query_light_state.side_effect = [_rejection(ha_modules), {"power": True}]
+    with pytest.raises(ha_modules.coordinator.UpdateFailed, match=r"rejected lb/0/ct.*0x04"):
+        await coordinator._async_update_data()
+    device.close.assert_not_awaited()
+    assert coordinator._session is device
+    assert (await coordinator._async_update_data())["light"] == {"power": True}
+    assert coordinator._session is device
+
+
+async def test_poll_transport_failure_still_closes_session(settings, ha_modules):
+    coordinator, device = settings
+    device.query_light_state.side_effect = OSError("network down")
+    with pytest.raises(ha_modules.coordinator.UpdateFailed, match="Connection lost"):
+        await coordinator._async_update_data()
+    device.close.assert_awaited_once()
+    assert coordinator._session is None
+
+
+async def test_poll_endpoint_rejection_after_reauth_keeps_session(settings, ha_modules):
+    coordinator, device = settings
+    expired = ha_modules.coordinator.SessionExpiredError("expired")
+    device.query_light_state.side_effect = [expired, _rejection(ha_modules, "lb/0/oo")]
+    device.reauth = AsyncMock()
+    with pytest.raises(ha_modules.coordinator.UpdateFailed, match="rejected lb/0/oo"):
+        await coordinator._async_update_data()
+    device.reauth.assert_awaited_once()
+    device.close.assert_not_awaited()
+    assert coordinator._session is device
+
+
+async def test_service_call_endpoint_rejection_keeps_session(settings, ha_modules):
+    coordinator, device = settings
+    action = AsyncMock(side_effect=_rejection(ha_modules))
+    with pytest.raises(ha_modules.coordinator.HomeAssistantError, match="Command rejected"):
+        await coordinator.async_service_call(action)
+    device.close.assert_not_awaited()
+    assert coordinator._session is device
+
+
+async def test_service_call_transport_failure_still_closes_session(settings, ha_modules):
+    coordinator, device = settings
+    action = AsyncMock(side_effect=OSError("network down"))
+    with pytest.raises(ha_modules.coordinator.HomeAssistantError, match="Command failed"):
+        await coordinator.async_service_call(action)
+    device.close.assert_awaited_once()
+    assert coordinator._session is None
+
+
+async def test_service_call_endpoint_rejection_after_reauth_keeps_session(settings, ha_modules):
+    coordinator, device = settings
+    expired = ha_modules.coordinator.SessionExpiredError("expired")
+    action = AsyncMock(side_effect=[expired, _rejection(ha_modules)])
+    device.reauth = AsyncMock()
+    with pytest.raises(ha_modules.coordinator.HomeAssistantError, match="Command rejected"):
+        await coordinator.async_service_call(action)
+    device.close.assert_not_awaited()
+    assert coordinator._session is device
+
+
+# -- Secretlab (NL62) preset scene names -------------------------------------------------
+
+
+class _Lookup:
+    """Stand-in for SceneLookup: matches every palette to a community scene."""
+
+    def resolve(self, palette):
+        return ("Community scene", "uuid", "prefix")
+
+
+def _use_model(coordinator, device, model):
+    coordinator.config_entry.data["model"] = model
+    device.query_device_info.return_value = {"model_number": model, "firmware_version": "1.6.49"}
+    coordinator.data["device"] = {"model_number": model, "firmware_version": "1.6.49"}
+    coordinator._scene_lookup = _Lookup()
+
+
+async def test_nl62_presets_use_fixed_names_without_reading_the_scene(settings):
+    coordinator, device = settings
+    _use_model(coordinator, device, "NL62")
+    device.list_scenes.return_value = [bytes([1]), bytes([0xF4]), bytes([0xF5])]
+    device.get_scene = AsyncMock(return_value={"palette": "ff0000", "metadata": b""})
+    await coordinator._refresh_static_data()
+    assert coordinator.data["scene_names"] == {
+        b"\x01": "Community scene",  # user scenes still resolve by palette
+        b"\xf4": "Cyberpunk 2077",
+        b"\xf5": "VALORANT",
+    }
+    # Only the user scene is read; presets are named by ID alone.
+    device.get_scene.assert_awaited_once_with(b"\x01", timeout=10.0)
+
+
+async def test_other_models_keep_palette_names_for_the_same_ids(settings):
+    coordinator, device = settings
+    _use_model(coordinator, device, "NL45")
+    device.list_scenes.return_value = [bytes([0xF4])]
+    device.get_scene = AsyncMock(return_value={"palette": "ff0000", "metadata": b""})
+    await coordinator._refresh_static_data()
+    assert coordinator.data["scene_names"] == {b"\xf4": "Community scene"}
+
+
+async def test_reloading_scenes_keeps_nl62_preset_names(settings, ha_modules, monkeypatch):
+    coordinator, device = settings
+    _use_model(coordinator, device, "NL62")
+    coordinator.data["scene_handles"] = [b"\xf4", b"\xfa"]
+    device.get_scene = AsyncMock(return_value={"palette": "ff0000", "metadata": b""})
+    coordinator.async_select_scenes_path = AsyncMock(return_value="scenes.json")
+    coordinator._scene_lookup = None
+    monkeypatch.setattr(
+        ha_modules.coordinator,
+        "SceneLookup",
+        SimpleNamespace(from_path_async=AsyncMock(return_value=_Lookup())),
+    )
+    await coordinator.async_reload_scenes()
+    assert coordinator.data["scene_names"] == {
+        b"\xf4": "Cyberpunk 2077",
+        b"\xfa": "Northern Lights",
+    }
+    device.get_scene.assert_not_awaited()
+
+
+def test_fallback_name_prefers_preset_then_handle(settings):
+    coordinator, device = settings
+    _use_model(coordinator, device, "NL62")
+    assert coordinator._fallback_scene_name(b"\xfc") == "Cloud9"
+    assert coordinator._fallback_scene_name(b"\x07") == "Scene 0x07"
+    coordinator.data["device"] = {"model_number": "NL45"}
+    assert coordinator._fallback_scene_name(b"\xfc") == "Scene 0xfc"

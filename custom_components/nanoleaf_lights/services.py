@@ -50,8 +50,13 @@ _CIRCADIAN_FIELDS = {
 _CIRCADIAN_KEYS = tuple(key.schema for key in _CIRCADIAN_FIELDS)
 _SCENE_FIELDS = {
     vol.Required("scene"): vol.All(cv.string, vol.Length(min=1)),
-    vol.Optional("effect", default="fade"): vol.In(("fade", "random", "highlight")),
+    vol.Optional("effect", default="fade"): vol.In(
+        ("fade", "random", "highlight", "flow", "stripes")
+    ),
     vol.Optional("transition", default=24): vol.All(int, vol.Range(min=0, max=255)),
+    # Used by flow and stripes (NL62 only); other animations ignore them.
+    vol.Optional("direction", default="left"): vol.In(("left", "right", "up", "down")),
+    vol.Optional("segment", default=50): vol.All(int, vol.Range(min=0, max=255)),
 }
 
 
@@ -85,12 +90,17 @@ async def _target_entries(call: ServiceCall, capability: str) -> list[ConfigEntr
             raise ServiceValidationError(
                 f"The targeted Nanoleaf device does not support {capability}"
             )
-        if (
-            capability == "scene_upload"
-            and call.data.get("transition") == 0
-            and capabilities.get("scene_protocol") == "effectV2"
-        ):
-            raise ServiceValidationError("Native effectV2 requires a transition of at least 1")
+        if capability == "scene_upload":
+            effect = call.data.get("effect")
+            if effect is not None and effect not in (capabilities.get("scene_effects") or ()):
+                raise ServiceValidationError(
+                    f"The targeted Nanoleaf device does not support the {effect} animation"
+                )
+            if (
+                call.data.get("transition") == 0
+                and capabilities.get("scene_protocol") == "effectV2"
+            ):
+                raise ServiceValidationError("Native effectV2 requires a transition of at least 1")
         entries.append(entry)
     if not entries:
         raise ServiceValidationError("Select an Enhanced Nanoleaf entity or device")
@@ -129,7 +139,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async def preview_scene(call: ServiceCall) -> None:
         for entry in await _target_entries(call, "scene_upload"):
             await entry.runtime_data.async_scene_action(
-                call.data["scene"], call.data["effect"], call.data["transition"], upload=False
+                call.data["scene"], call.data["effect"], call.data["transition"],
+                upload=False, direction=call.data["direction"], segment=call.data["segment"],
             )
 
     async def upload_scene(call: ServiceCall) -> None:
@@ -137,6 +148,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             await entry.runtime_data.async_scene_action(
                 call.data["scene"], call.data["effect"], call.data["transition"],
                 upload=True, activate=call.data["activate"],
+                direction=call.data["direction"], segment=call.data["segment"],
             )
 
     registrations = (

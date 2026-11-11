@@ -8,9 +8,11 @@ from typing import Any
 
 import pytest
 
+from nl_ltpdu import EndpointStatusError
 from nl_ltpdu_v3 import (
     EFFECT_ID_MAX,
     V3Controls,
+    _operation_response,
     build_effect_v2,
     parse_effects,
 )
@@ -305,6 +307,65 @@ async def test_light_reads_variable_widths_and_mode() -> None:
         "color_mode": "effect",
     }
     assert all(request[2] == 0 for request in session.requests)
+
+
+class RejectingSession(FakeSession):
+    def __init__(self, responses: dict[str, bytes], rejected: dict[str, int]) -> None:
+        super().__init__(responses)
+        self.rejected = rejected
+
+    async def _request(
+        self, endpoint: str, payload: bytes = b"", method: int = 0, timeout: float = 10.0
+    ) -> bytes:
+        if endpoint in self.rejected:
+            raise EndpointStatusError(endpoint, self.rejected[endpoint], prefix="v3 endpoint ")
+        return await super()._request(endpoint, payload, method, timeout)
+
+
+STRIP_STATE = {
+    "lb/0/oo": b"\x00\x01",
+    "lb/0/pb": b"\x00\x32",
+    "lb/0/hu": b"\x00\x78",
+    "lb/0/sa": b"\x00\x64",
+}
+
+
+async def test_light_state_tolerates_rejected_color_temp_and_mode() -> None:
+    session = RejectingSession(STRIP_STATE, {"lb/0/ct": 4, "lb/0/cm": 4})
+    assert await session.query_light_state() == {
+        "power": True,
+        "brightness": 50,
+        "hue": 120,
+        "saturation": 100,
+        "color_temp": None,
+        "color_mode": "hs",
+    }
+
+
+async def test_light_state_rejected_mode_falls_back_to_ct_when_temperature_is_known() -> None:
+    session = RejectingSession(
+        {**STRIP_STATE, "lb/0/ct": b"\x00\x00\x0a\x28"}, {"lb/0/cm": 4}
+    )
+    state = await session.query_light_state()
+    assert state["color_temp"] == 2600
+    assert state["color_mode"] == "ct"
+
+
+async def test_light_state_rejected_required_endpoint_still_raises() -> None:
+    session = RejectingSession(STRIP_STATE, {"lb/0/oo": 4})
+    with pytest.raises(EndpointStatusError, match="lb/0/oo.*status 0x04") as error:
+        await session.query_light_state()
+    assert (error.value.endpoint, error.value.status) == ("lb/0/oo", 4)
+
+
+def test_v3_operation_response_reports_endpoint_status() -> None:
+    packet = tlv_u16(1, b"lb/0/ct") + tlv_u16(3, b"\x04")
+    with pytest.raises(EndpointStatusError, match="lb/0/ct returned status 0x04"):
+        _operation_response(packet, "lb/0/ct")
+
+
+def tlv_u16(tag: int, data: bytes) -> bytes:
+    return tag.to_bytes(2, "big") + len(data).to_bytes(2, "big") + data
 
 
 async def test_light_writes_and_identify_wire_values() -> None:

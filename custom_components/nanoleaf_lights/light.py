@@ -17,6 +17,7 @@ from homeassistant.components.light import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util.color import color_temperature_to_hs
 
 from .const import (
     MAX_COLOR_TEMP_KELVIN,
@@ -24,7 +25,7 @@ from .const import (
 )
 from .coordinator import NanoleafLtpduCoordinator
 from .entity import NanoleafLtpduEntity
-from .nl_ltpdu_v3 import color_temperature_range
+from .nl_ltpdu_v3 import color_temperature_range, device_capabilities
 from .session import scene_fallback_name, scene_handle_bytes
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,7 +45,6 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
     """Represents a Nanoleaf light bulb as an HA light."""
 
     _attr_supported_features = LightEntityFeature.EFFECT
-    _attr_supported_color_modes = {ColorMode.HS, ColorMode.COLOR_TEMP}
     _attr_min_color_temp_kelvin = MIN_COLOR_TEMP_KELVIN
     _attr_max_color_temp_kelvin = MAX_COLOR_TEMP_KELVIN
     _attr_translation_key = "light"
@@ -55,11 +55,29 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
         self._attr_unique_id = f"{entry.unique_id}-light"
         self._attr_name = None  # Use device name directly (has_entity_name + no suffix)
         # Track last-used color mode so HA reports the correct one.
-        self._color_mode: ColorMode = ColorMode.COLOR_TEMP
+        self._color_mode: ColorMode = (
+            ColorMode.COLOR_TEMP if self._supports_color_temp else ColorMode.HS
+        )
 
     # ------------------------------------------------------------------
     # State properties
     # ------------------------------------------------------------------
+
+    @property
+    def _supports_color_temp(self) -> bool:
+        """Whether the device accepts color temperature (NL62 strips do not)."""
+        capabilities = (self.coordinator.data or {}).get("capabilities") or {}
+        if "color_temp" in capabilities:
+            return bool(capabilities["color_temp"])
+        # Before the first device-info read, fall back to the configured model.
+        model = self.coordinator.config_entry.data.get("model")
+        return bool(device_capabilities(model, None)["color_temp"])
+
+    @property
+    def supported_color_modes(self) -> set[ColorMode]:
+        if self._supports_color_temp:
+            return {ColorMode.HS, ColorMode.COLOR_TEMP}
+        return {ColorMode.HS}
 
     @property
     def _light(self) -> dict:
@@ -109,6 +127,8 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
 
     @property
     def color_mode(self) -> ColorMode:
+        if not self._supports_color_temp:
+            return ColorMode.HS
         if self._light and self._light.get("color_temp") is None:
             return ColorMode.HS
         return self._color_mode
@@ -157,7 +177,14 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
             self._color_mode = ColorMode.HS
 
         ct_kelvin: int | None = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
-        if ct_kelvin is not None:
+        if ct_kelvin is not None and not self._supports_color_temp:
+            # HA core normally converts this first; never send lb/0/ct to such a device.
+            if hs is None:
+                hue, saturation = color_temperature_to_hs(ct_kelvin)
+                set_kwargs["hue"] = round(hue)
+                set_kwargs["saturation"] = round(saturation)
+            self._color_mode = ColorMode.HS
+        elif ct_kelvin is not None:
             ct_kelvin = max(self.min_color_temp_kelvin, min(self.max_color_temp_kelvin, ct_kelvin))
             set_kwargs["color_temp"] = ct_kelvin
             self._color_mode = ColorMode.COLOR_TEMP

@@ -13,9 +13,9 @@ Nanoleaf cloud is only used to resolve scene names from palette data (if needed)
 | --- | --- | --- |
 | NL67 | Essentials A19 / A60 (Matter) | Tested |
 | NL45 | Essentials A19 (legacy) | Tested |
-| NL55 | Essentials Bulb (legacy) | Should work |
+| NL55 | Essentials Light Strip (legacy) | Should work |
 | NL58 | Essentials Candle (legacy) | Should work |
-| NL62 | Essentials BR30 (legacy) | Should work |
+| NL62 | Secretlab MAGRGB Smart LED Strip (legacy) | Should work |
 
 NL55/NL58/NL62 use the same protocol variant as NL45 and are expected to work but have not been verified on hardware.
 
@@ -29,7 +29,7 @@ NL55/NL58/NL62 use the same protocol variant as NL45 and are expected to work bu
 | Power on/off | yes |
 | Brightness | yes |
 | Hue / saturation | yes |
-| Color temperature | yes |
+| Color temperature | yes (not NL62) |
 | Auto Circadian Lighting | switch and schedule action |
 | Clock, timezone, and location | actions and synchronization button |
 | Power Loss Recovery | configuration switch |
@@ -109,12 +109,12 @@ It needs no build step or runtime dependencies.
 #### Manual installation
 
 The integration implements `nanoleaf_lights.preview_scene` and
-`nanoleaf_lights.upload_scene` for NL45 bulbs using the legacy protocol and NL67 bulbs
+`nanoleaf_lights.upload_scene` for NL45 and NL62 devices using the legacy protocol and NL67 bulbs
 with firmware 5+ using native effectV2 over LTPDUv3. Update the
 integration files and restart Home Assistant before testing these buttons.
 If the actions are missing, the card displays a warning and disables the buttons.
 Other models, older NL67 firmware, and unsupported transports are rejected without uploading.
-NL67 uploads are experimental: the encoding and endpoints are covered by offline tests,
+NL62 and NL67 uploads are experimental: the encoding and endpoints are covered by offline tests,
 but live preview/upload testing remains pending.
 
 1. Create `config/www/nanoleaf-lights/` and copy `frontend/nanoleaf-scene-card.js`
@@ -173,8 +173,13 @@ The card calls these actions with `target: {entity_id: light.your_nanoleaf_bulb}
 
 | Action | Data |
 |---|---|
-| `nanoleaf_lights.preview_scene` | `scene` (catalogue UUID), `effect` (`fade`, `random`, `highlight`), `transition` (0-255) |
+| `nanoleaf_lights.preview_scene` | `scene` (catalogue UUID), `effect` (`fade`, `random`, `highlight`; NL62 also `flow`, `stripes`), `transition` (0-255), `direction` (`left`, `right`, `up`, `down`; default `left`), `segment` (0-255; default 50) |
 | `nanoleaf_lights.upload_scene` | Same fields, plus `activate` (boolean, default false) |
+
+`direction` applies to `flow` and `stripes`, and `segment` to `stripes`; other animations ignore
+them. Requesting `flow` or `stripes` for any device other than an NL62 is rejected for every
+selected target before anything is sent. The scene card still offers only Fade, Random and
+Highlight; use the actions directly for the NL62-only animations.
 
 The backend resolves the UUID against the selected catalogue. It validates device support
 and motion parameters, serializes scene actions per device, enforces the NL45

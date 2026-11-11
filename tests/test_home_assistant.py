@@ -470,14 +470,17 @@ class Registry:
         return await handler(call)
 
 
+def harness_capabilities():
+    return {
+        **dict.fromkeys(["circadian", "time", "location", "motions", "scene_upload"], True),
+        "scene_effects": ["fade", "random", "highlight"],
+    }
+
+
 def harness(settings):
     registry = Registry()
-    loaded = coordinator(
-        capabilities=dict.fromkeys(["circadian", "time", "location", "motions", "scene_upload"], True)
-    )
-    other = coordinator(
-        capabilities=dict.fromkeys(["circadian", "time", "location", "motions", "scene_upload"], True)
-    )
+    loaded = coordinator(capabilities=harness_capabilities())
+    other = coordinator(capabilities=harness_capabilities())
     entries = {
         "a": SimpleNamespace(
             entry_id="a", domain=DOMAIN, state=settings.states.LOADED, runtime_data=loaded
@@ -530,7 +533,7 @@ async def test_scene_actions_target_integration_and_preserve_safe_defaults(setti
     if upload:
         expected["activate"] = False
     entries["a"].runtime_data.async_scene_action.assert_awaited_once_with(
-        "police", "fade", 24, **expected
+        "police", "fade", 24, direction="left", segment=50, **expected
     )
     entries["b"].runtime_data.async_scene_action.assert_not_awaited()
 
@@ -553,7 +556,7 @@ async def test_legacy_zero_transition_remains_valid(settings):
     await settings.services.async_setup_services(hass)
     await registry.invoke(hass, "preview_scene", {"scene": "police", "transition": 0}, ["a"])
     entries["a"].runtime_data.async_scene_action.assert_awaited_once_with(
-        "police", "fade", 0, upload=False
+        "police", "fade", 0, upload=False, direction="left", segment=50
     )
 
 
@@ -563,7 +566,11 @@ async def test_legacy_zero_transition_remains_valid(settings):
     {"scene": "police", "transition": -1},
     {"scene": "police", "transition": 256},
     {"scene": "police", "transition": 1.5},
-    {"scene": "police", "effect": "flow"},
+    {"scene": "police", "effect": "sparkle"},
+    {"scene": "police", "direction": "sideways"},
+    {"scene": "police", "segment": -1},
+    {"scene": "police", "segment": 256},
+    {"scene": "police", "segment": 1.5},
     {"scene": "police", "activate": "false"},
 ])
 async def test_scene_action_schema_rejects_invalid_values(settings, data):
@@ -907,3 +914,112 @@ async def test_light_white_temperature_bounds_and_write_agree(ha_modules, firmwa
     assert light.min_color_temp_kelvin == minimum
     await light.async_turn_on(color_temp_kelvin=2100)
     device.set_light_state.assert_awaited_once_with(on=True, color_temp=minimum)
+
+
+def _color_light(ha_modules, model: str, *, capabilities=None, light_state=None):
+    device = SimpleNamespace(set_light_state=AsyncMock())
+
+    async def call(action):
+        await action(device)
+
+    data = {"device": {"model_number": model, "firmware_version": "1.6.49"}}
+    if capabilities is not None:
+        data["capabilities"] = capabilities
+    if light_state is not None:
+        data["light"] = light_state
+    light = ha_modules.light.NanoleafLtpduLight.__new__(ha_modules.light.NanoleafLtpduLight)
+    light._color_mode = "color_temp"
+    light.coordinator = SimpleNamespace(
+        config_entry=SimpleNamespace(data={"model": model}),
+        data=data,
+        async_service_call=call,
+        async_request_refresh=AsyncMock(),
+    )
+    return light, device
+
+
+async def test_nl62_light_is_hs_only_and_never_writes_color_temperature(ha_modules):
+    light, device = _color_light(ha_modules, "NL62", light_state={"power": True, "color_temp": None})
+    assert light.supported_color_modes == {"hs"}
+    assert light.color_mode == "hs"
+    await light.async_turn_on(color_temp_kelvin=2700)
+    device.set_light_state.assert_awaited_once_with(on=True, hue=30, saturation=20)
+    assert light.color_mode == "hs"
+
+
+async def test_nl62_explicit_hs_wins_over_converted_color_temperature(ha_modules):
+    light, device = _color_light(ha_modules, "NL62")
+    await light.async_turn_on(color_temp_kelvin=2700, hs_color=(120.0, 80.0))
+    device.set_light_state.assert_awaited_once_with(on=True, hue=120, saturation=80)
+
+
+async def test_nl62_mode_is_hs_before_the_first_device_read(ha_modules):
+    # No capabilities and no light state yet: the configured model decides.
+    light, _ = _color_light(ha_modules, "NL62")
+    assert light.supported_color_modes == {"hs"}
+    assert light.color_mode == "hs"
+
+
+async def test_color_temperature_capable_light_is_unchanged(ha_modules):
+    light, device = _color_light(
+        ha_modules, "NL45", light_state={"power": True, "color_temp": 2700}
+    )
+    assert light.supported_color_modes == {"hs", "color_temp"}
+    assert light.color_mode == "color_temp"
+    await light.async_turn_on(color_temp_kelvin=3000)
+    device.set_light_state.assert_awaited_once_with(on=True, color_temp=3000)
+
+
+async def test_light_prefers_device_capability_over_configured_model(ha_modules):
+    light, _ = _color_light(ha_modules, "NL45", capabilities={"color_temp": False})
+    assert light.supported_color_modes == {"hs"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,upload", [("preview_scene", False), ("upload_scene", True)])
+async def test_nl62_flow_and_stripes_options_reach_the_coordinator(settings, action, upload):
+    hass, registry, entries = harness(settings)
+    entries["a"].runtime_data.data["capabilities"]["scene_effects"] = [
+        "fade", "random", "highlight", "flow", "stripes",
+    ]
+    await settings.services.async_setup_services(hass)
+    await registry.invoke(
+        hass,
+        action,
+        {"scene": "police", "effect": "stripes", "direction": "down", "segment": 24},
+        ["a"],
+    )
+    expected = {"upload": upload, "direction": "down", "segment": 24}
+    if upload:
+        expected["activate"] = False
+    entries["a"].runtime_data.async_scene_action.assert_awaited_once_with(
+        "police", "stripes", 24, **expected
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["preview_scene", "upload_scene"])
+@pytest.mark.parametrize("effect", ["flow", "stripes"])
+async def test_nl62_only_effects_are_rejected_for_every_target_before_writing(
+    settings, action, effect
+):
+    hass, registry, entries = harness(settings)
+    # "a" is an NL62-like target; "b" only supports the base animations.
+    entries["a"].runtime_data.data["capabilities"]["scene_effects"] = [
+        "fade", "random", "highlight", "flow", "stripes",
+    ]
+    await settings.services.async_setup_services(hass)
+    with pytest.raises(RuntimeError, match=f"does not support the {effect} animation"):
+        await registry.invoke(hass, action, {"scene": "police", "effect": effect}, ["a", "b"])
+    for identifier in ("a", "b"):
+        entries[identifier].runtime_data.async_scene_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scene_effect_missing_from_capabilities_is_rejected(settings):
+    hass, registry, entries = harness(settings)
+    del entries["a"].runtime_data.data["capabilities"]["scene_effects"]
+    await settings.services.async_setup_services(hass)
+    with pytest.raises(RuntimeError, match="does not support the fade animation"):
+        await registry.invoke(hass, "preview_scene", {"scene": "police"}, ["a"])
+    entries["a"].runtime_data.async_scene_action.assert_not_awaited()

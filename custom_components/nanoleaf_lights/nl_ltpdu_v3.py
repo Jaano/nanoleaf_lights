@@ -10,6 +10,7 @@ import colorsys
 import hashlib
 import hmac
 import json
+import logging
 import math
 import secrets
 import struct
@@ -19,9 +20,21 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
 if __package__:
-    from .nl_ltpdu import AuthRejectedError, SessionExpiredError, decode_palette_hex
+    from .nl_ltpdu import (
+        AuthRejectedError,
+        EndpointStatusError,
+        SessionExpiredError,
+        decode_palette_hex,
+    )
 else:
-    from nl_ltpdu import AuthRejectedError, SessionExpiredError, decode_palette_hex
+    from nl_ltpdu import (
+        AuthRejectedError,
+        EndpointStatusError,
+        SessionExpiredError,
+        decode_palette_hex,
+    )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # SRP and secure-session encryption.
@@ -373,6 +386,14 @@ def parse_effects(data: bytes) -> list[dict[str, Any]]:
 
 
 _HOMEKIT_MODELS = {"NL45", "NL55", "NL58", "NL62"}
+# Models whose light rejects the color-temperature endpoint (lb/0/ct): HS color only.
+_NO_COLOR_TEMP_MODELS = frozenset({"NL62"})
+# Legacy models that store palette scenes through the simple-scene TLV (ci 0x0702).
+_SIMPLE_SCENE_UPLOAD_MODELS = frozenset({"NL45", "NL62"})
+# Palette animations a device can run. The Secretlab MAGRGB strip (NL62) alone adds flow
+# and stripes; the Nanoleaf app refuses to send those effect types to any other model.
+_BASE_SCENE_EFFECTS = ("fade", "random", "highlight")
+_SCENE_EFFECTS_BY_MODEL = {"NL62": (*_BASE_SCENE_EFFECTS, "flow", "stripes")}
 _THREAD_MODELS = {"NL53", "NL54", "NL65", "NL67", "NL68", "SQUB01", "SQUB03"}
 _WIFI_MODELS = {
     "NL71K1",
@@ -515,12 +536,18 @@ def device_capabilities(model: str | None, firmware: str | None) -> dict[str, An
         valid and model not in {"NL62", "NL72S1", "NL72S2", "SQSL01"} and version >= threshold
     )
     return {
+        # Independent of `valid`: unknown models keep color temperature, as before.
+        "color_temp": model not in _NO_COLOR_TEMP_MODELS,
         "circadian": circadian,
         "time": valid,
         "location": valid,
         "power_loss_recovery": valid,
         "motions": valid,
-        "scene_upload": valid and (model == "NL45" or (model == "NL67" and effect_v2)),
+        "scene_upload": valid
+        and (model in _SIMPLE_SCENE_UPLOAD_MODELS or (model == "NL67" and effect_v2)),
+        "scene_effects": list(_SCENE_EFFECTS_BY_MODEL.get(model, _BASE_SCENE_EFFECTS))
+        if valid
+        else [],
         "scene_protocol": "effectV2"
         if effect_v2
         else "ciOneD"
@@ -846,9 +873,22 @@ class V3Controls:
             ("saturation", "sa"),
             ("color_temp", "ct"),
         ):
-            value = _uint(await self._request(f"lb/0/{suffix}", timeout=timeout), suffix)
+            try:
+                value = _uint(await self._request(f"lb/0/{suffix}", timeout=timeout), suffix)
+            except EndpointStatusError as exc:
+                # Color temperature is optional (e.g. NL62 rejects it); the rest is required.
+                if key != "color_temp":
+                    raise
+                _LOGGER.debug("query_light_state: %s", exc)
+                result[key] = None
+                continue
             result[key] = bool(value) if key == "power" else value
-        mode = await self._request("lb/0/cm", timeout=timeout)
+        try:
+            mode = await self._request("lb/0/cm", timeout=timeout)
+        except EndpointStatusError as exc:
+            _LOGGER.debug("query_light_state: %s", exc)
+            result["color_mode"] = "hs" if result["color_temp"] is None else "ct"
+            return result
         if len(mode) == 1:
             result["color_mode"] = {0: "hs", 1: "xy", 2: "ct", 4: "effect"}.get(mode[0], "hs")
         else:
@@ -1213,7 +1253,7 @@ def _operation_response(data: bytes, endpoint: str) -> bytes:
             if response is not None or echoed != endpoint or not value:
                 raise RuntimeError("Invalid v3 operation response")
             if value[0] != 0:
-                raise RuntimeError(f"v3 endpoint {endpoint} returned status {value[0]}")
+                raise EndpointStatusError(endpoint, value[0], prefix="v3 endpoint ")
             response = value[1:]
     if response is None:
         raise RuntimeError("Missing v3 operation response")

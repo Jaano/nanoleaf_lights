@@ -613,3 +613,120 @@ async def test_coordinator_keeps_opaque_ids_and_prefers_device_names(ha_modules)
         b"\x11": "Bulb 11",
         b"\x00\x00\x00\x11": "Bulb 00000011",
     }
+
+
+# -- NL62 (Secretlab MAGRGB): flow and stripes ------------------------------------------
+
+
+@pytest.fixture
+def nl62_scenes(scenes):
+    coordinator = scenes.coordinator
+    coordinator.config_entry.data["model"] = "NL62"
+    coordinator.data["capabilities"] = device_capabilities("NL62", "1.6.49")
+    return scenes
+
+
+def _metadata(payload: bytes) -> bytes:
+    """Return the TLV1 0x01 metadata bytes of a simple-scene payload."""
+    assert payload[0] == 1
+    return payload[2 : 2 + payload[1]]
+
+
+async def test_nl62_uploads_stripes_with_direction_and_segment(nl62_scenes):
+    await nl62_scenes.coordinator.async_scene_action(
+        "police", "stripes", 18, upload=True, direction="right", segment=24
+    )
+    payload = nl62_scenes.device.add_scene.await_args.args[0]
+    # [scene id, stripes=6, transition, direction (right=1), segment]
+    assert _metadata(payload) == bytes([1, 6, 18, 1, 24])
+    assert nl62_scenes.saved[1] == payload
+
+
+async def test_nl62_uploads_flow_with_direction_and_loop(nl62_scenes):
+    await nl62_scenes.coordinator.async_scene_action(
+        "police", "flow", 8, upload=True, direction="up"
+    )
+    payload = nl62_scenes.device.add_scene.await_args.args[0]
+    # [scene id, flow=5, transition, wait, direction (up=2), loop]
+    assert _metadata(payload) == bytes([1, 5, 8, 0, 2, 1])
+
+
+@pytest.mark.parametrize(("direction", "code"), [("left", 0), ("right", 1), ("up", 2), ("down", 3)])
+async def test_nl62_direction_names_map_to_the_apps_codes(nl62_scenes, direction, code):
+    await nl62_scenes.coordinator.async_scene_action(
+        "police", "flow", 8, upload=False, direction=direction
+    )
+    payload = nl62_scenes.device.preview_scene.await_args.args[0]
+    assert _metadata(payload)[4] == code
+
+
+async def test_nl62_flow_and_stripes_preview_without_saving(nl62_scenes):
+    for effect, code in (("flow", 5), ("stripes", 6)):
+        await nl62_scenes.coordinator.async_scene_action("police", effect, 10, upload=False)
+        assert _metadata(nl62_scenes.device.preview_scene.await_args.args[0])[1] == code
+    nl62_scenes.device.add_scene.assert_not_awaited()
+
+
+async def test_nl62_upload_readback_verifies_flow_and_stripes(nl62_scenes):
+    await nl62_scenes.coordinator.async_scene_action(
+        "police", "stripes", 18, upload=True, direction="down", segment=7
+    )
+    nl62_scenes.device.get_scene.assert_awaited_once()
+    assert nl62_scenes.coordinator.data["scene_names"][b"\x01"] == "Police 1"
+
+
+@pytest.mark.parametrize("effect", ["flow", "stripes"])
+async def test_other_models_reject_nl62_only_effects_before_any_device_io(scenes, effect):
+    with pytest.raises(RuntimeError, match="does not support this scene animation"):
+        await scenes.coordinator.async_scene_action("police", effect, 24, upload=True)
+    scenes.device.list_scenes.assert_not_awaited()
+    scenes.device.preview_scene.assert_not_awaited()
+    scenes.device.add_scene.assert_not_awaited()
+
+
+async def test_nl62_presets_do_not_count_toward_the_user_scene_limit(nl62_scenes):
+    populate(nl62_scenes, [*range(1, 12), *range(244, 250)])
+    await nl62_scenes.coordinator.async_scene_action("police", "stripes", 24, upload=True)
+    assert nl62_scenes.device.add_scene.await_args.args[0][2] == 12
+    assert {244, 245, 246, 247, 248, 249} <= set(nl62_scenes.saved)
+
+
+async def test_nl62_full_user_storage_rejects_upload_but_allows_preview(nl62_scenes):
+    populate(nl62_scenes, [*range(1, 13), *range(244, 250)])
+    with pytest.raises(RuntimeError, match="12 saved user scenes"):
+        await nl62_scenes.coordinator.async_scene_action("police", "flow", 24, upload=True)
+    nl62_scenes.device.add_scene.assert_not_awaited()
+    await nl62_scenes.coordinator.async_scene_action("police", "flow", 24, upload=False)
+    nl62_scenes.device.preview_scene.assert_awaited_once()
+
+
+async def test_nl62_upload_never_takes_a_preset_id(nl62_scenes):
+    populate(nl62_scenes, range(1, 12))
+    await nl62_scenes.coordinator.async_scene_action("police", "flow", 24, upload=True)
+    assigned = nl62_scenes.device.add_scene.await_args.args[0][2]
+    assert 1 <= assigned <= 243
+
+
+@pytest.mark.parametrize("direction", ["", "sideways", None, 1])
+async def test_invalid_direction_prevents_device_io(nl62_scenes, direction):
+    with pytest.raises(RuntimeError, match="Direction must be"):
+        await nl62_scenes.coordinator.async_scene_action(
+            "police", "flow", 24, upload=True, direction=direction
+        )
+    nl62_scenes.device.list_scenes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("segment", [-1, 256, 1.5, True, None])
+async def test_invalid_segment_prevents_device_io(nl62_scenes, segment):
+    with pytest.raises(RuntimeError, match="Segment must be an integer from 0 to 255"):
+        await nl62_scenes.coordinator.async_scene_action(
+            "police", "stripes", 24, upload=True, segment=segment
+        )
+    nl62_scenes.device.list_scenes.assert_not_awaited()
+
+
+async def test_nl62_over_modern_session_is_rejected_before_writing(nl62_scenes, factory):
+    nl62_scenes.coordinator._session = factory.modern()
+    with pytest.raises(RuntimeError, match="legacy protocol"):
+        await nl62_scenes.coordinator.async_scene_action("police", "flow", 24, upload=True)
+    nl62_scenes.device.add_scene.assert_not_awaited()

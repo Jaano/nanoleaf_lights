@@ -1,6 +1,6 @@
 preview_scene:
   name: Preview scene
-  description: Play a bulb-compatible palette animation on NL45 or NL67 (firmware 5+, native effectV2) without saving it.
+  description: Play a device-compatible palette animation on NL45, NL62 or NL67 (firmware 5+, native effectV2) without saving it. Flow and stripes are NL62 only.
   target:
     entity:
       integration: nanoleaf_lights
@@ -21,9 +21,31 @@ preview_scene:
             - fade
             - random
             - highlight
+            - flow
+            - stripes
     transition:
       name: Transition
       description: Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24.
+      selector:
+        number:
+          min: 0
+          max: 255
+          step: 1
+          mode: box
+    direction:
+      name: Direction
+      description: Flow and stripes only (NL62). Default is left.
+      selector:
+        select:
+          translation_key: scene_direction
+          options:
+            - left
+            - right
+            - up
+            - down
+    segment:
+      name: Segment
+      description: Stripes only (NL62). Protocol value from 0 to 255. Default is 50.
       selector:
         number:
           min: 0
@@ -38,7 +60,7 @@ preview_scene:
 
 upload_scene:
   name: Upload scene
-  description: Save and verify an NL45 or NL67 palette animation. NL67 requires firmware 5+ and native effectV2. Enforces the 12-scene limit and never replaces an existing scene.
+  description: Save and verify an NL45, NL62 or NL67 palette animation. NL67 requires firmware 5+ and native effectV2. Flow and stripes are NL62 only. Enforces the 12-scene limit and never replaces an existing scene.
   target:
     entity:
       integration: nanoleaf_lights
@@ -59,9 +81,31 @@ upload_scene:
             - fade
             - random
             - highlight
+            - flow
+            - stripes
     transition:
       name: Transition
       description: Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24.
+      selector:
+        number:
+          min: 0
+          max: 255
+          step: 1
+          mode: box
+    direction:
+      name: Direction
+      description: Flow and stripes only (NL62). Default is left.
+      selector:
+        select:
+          translation_key: scene_direction
+          options:
+            - left
+            - right
+            - up
+            - down
+    segment:
+      name: Segment
+      description: Stripes only (NL62). Protocol value from 0 to 255. Default is 50.
       selector:
         number:
           min: 0

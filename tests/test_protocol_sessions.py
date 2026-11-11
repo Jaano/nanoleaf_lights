@@ -342,7 +342,7 @@ async def test_busy_kex_closes_before_retry(monkeypatch):
     malformed = Context(b"\x01")
     calls = 0
 
-    async def create() -> Context:
+    async def create(**_kwargs: object) -> Context:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -354,3 +354,32 @@ async def test_busy_kex_closes_before_retry(monkeypatch):
     with pytest.raises(ValueError, match="TLV buffer too short"):
         await nl_ltpdu.LtpduSession.kex("::1", 5683)
     malformed.shutdown.assert_awaited_once()
+
+
+@pytest.mark.parametrize(("platform", "transport"), [("linux", "udp6"), ("darwin", "simple6")])
+def test_coap_transport_matches_platform(platform, transport):
+    # The transport is chosen at import time, so re-evaluate the module under each platform.
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("_nl_ltpdu_platform", nl_ltpdu.__file__)
+    module = importlib.util.module_from_spec(spec)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "platform", platform)
+        patch.setitem(sys.modules, spec.name, module)
+        spec.loader.exec_module(module)
+    assert module._COAP_TRANSPORTS == [transport]
+
+
+async def test_kex_names_transport_and_skips_default_probing(monkeypatch):
+    # Default-transport probing imports optional packages and scans sys.path on the loop.
+    def probing(*_args, **_kwargs):
+        raise AssertionError("default transport probing must not run")
+
+    context = Context(b"\x01")
+    create = AsyncMock(return_value=context)
+    monkeypatch.setattr(nl_ltpdu.aiocoap.Context, "create_client_context", create)
+    monkeypatch.setattr(nl_ltpdu.aiocoap.defaults, "get_default_clienttransports", probing)
+    with pytest.raises(ValueError, match="TLV buffer too short"):
+        await nl_ltpdu.LtpduSession.kex("::1", 5683)
+    create.assert_awaited_once_with(transports=nl_ltpdu._COAP_TRANSPORTS)

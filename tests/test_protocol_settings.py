@@ -423,9 +423,53 @@ async def test_legacy_bulb_retains_higher_temperature_limit() -> None:
     assert session.calls == []
 
 
+@pytest.mark.parametrize(
+    ("model", "firmware", "effects"),
+    [
+        ("NL62", "1.6.49", ["fade", "random", "highlight", "flow", "stripes"]),
+        ("NL45", "1.6.49", ["fade", "random", "highlight"]),
+        ("NL67", "5.1.45", ["fade", "random", "highlight"]),
+        ("NL62", None, []),
+        ("unknown", "1.6.49", []),
+        (None, None, []),
+    ],
+)
+def test_only_nl62_exposes_flow_and_stripes_scene_effects(
+    model: str | None, firmware: str | None, effects: list[str]
+) -> None:
+    assert device_capabilities(model, firmware)["scene_effects"] == effects
+
+
+def test_nl62_scene_upload_uses_the_simple_scene_protocol() -> None:
+    capabilities = device_capabilities("NL62", "1.6.49")
+    assert capabilities["scene_upload"] is True
+    assert capabilities["scene_protocol"] == "ciEssentials"
+    assert capabilities["max_palette_size"] == 7
+
+
+@pytest.mark.parametrize(
+    ("model", "firmware", "enabled"),
+    [
+        ("NL62", "1.6.49", False),
+        ("nl62", "1.6.49", False),
+        ("NL62", None, False),
+        ("NL45", "1.6.49", True),
+        ("NL67", "5.1.45", True),
+        ("NL67", None, True),
+        ("unknown", "5.1.45", True),
+        (None, None, True),
+    ],
+)
+def test_color_temperature_capability_only_excludes_known_hs_only_models(
+    model: str | None, firmware: str | None, enabled: bool
+) -> None:
+    assert device_capabilities(model, firmware)["color_temp"] is enabled
+
+
 @pytest.mark.parametrize(("model", "firmware", "enabled"), [
     ("NL67", "5.0.0", True), ("NL67", "4.1.0", False), ("NL67", None, False),
     ("NL45", "1.6.49", True), ("NL68", "5.1.45", False),
+    ("NL62", "1.6.49", True), ("NL62", None, False), ("NL55", "1.6.49", False),
 ])
 def test_scene_upload_gate(model: str, firmware: str | None, enabled: bool) -> None:
     assert device_capabilities(model, firmware)["scene_upload"] is enabled

@@ -248,3 +248,36 @@ class TestBuildSimpleSceneTlv:
         data = build_simple_scene_tlv(RED_HEX, scene_id=1, loop=False)
         meta, _ = self._parse(data)
         assert meta[4] == 0  # loop byte
+
+
+# ---------------------------------------------------------------------------
+# Secretlab (NL62) preset scene names
+# ---------------------------------------------------------------------------
+
+
+def test_nl62_preset_ids_are_named_like_the_app():
+    from nl_ltpdu import SECRETLAB_SCENE_NAMES, preset_scene_name
+
+    assert sorted(SECRETLAB_SCENE_NAMES) == list(range(244, 255))
+    assert preset_scene_name("NL62", b"\xf4") == "Cyberpunk 2077"
+    assert preset_scene_name("NL62", b"\xf5") == "VALORANT"
+    assert preset_scene_name("nl62", b"\xfe") == "Hip Hop"
+
+
+@pytest.mark.parametrize(
+    ("model", "handle"),
+    [
+        ("NL45", b"\xf4"),  # other models never get Secretlab names
+        ("NL67", b"\xf4"),
+        (None, b"\xf4"),
+        ("NL62", b"\x01"),  # user scene IDs stay unnamed
+        ("NL62", b"\xf3"),  # 243 is the last user ID
+        ("NL62", b"\xff"),  # 255 is not a preset
+        ("NL62", b"\x00\x00\x00\xf4"),  # 4-byte (native) handles are never presets
+        ("NL62", b""),
+    ],
+)
+def test_preset_scene_name_is_limited_to_nl62_preset_ids(model, handle):
+    from nl_ltpdu import preset_scene_name
+
+    assert preset_scene_name(model, handle) is None

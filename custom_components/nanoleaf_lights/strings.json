@@ -106,7 +106,17 @@
       "options": {
         "fade": "Fade",
         "random": "Random",
-        "highlight": "Highlight"
+        "highlight": "Highlight",
+        "flow": "Flow",
+        "stripes": "Stripes"
+      }
+    },
+    "scene_direction": {
+      "options": {
+        "left": "Left",
+        "right": "Right",
+        "up": "Up",
+        "down": "Down"
       }
     },
     "circadian_mode": {
@@ -119,21 +129,25 @@
   "services": {
     "preview_scene": {
       "name": "Preview scene",
-      "description": "Play a bulb-compatible palette animation on NL45 or NL67 (firmware 5+, native effectV2) without saving it.",
+      "description": "Play a device-compatible palette animation on NL45, NL62 or NL67 (firmware 5+, native effectV2) without saving it. Flow and stripes are NL62 only.",
       "fields": {
         "scene": { "name": "Scene UUID", "description": "UUID from the integration's downloaded scene database." },
         "effect": { "name": "Animation" },
         "transition": { "name": "Transition", "description": "Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24." },
+        "direction": { "name": "Direction", "description": "Flow and stripes only (NL62). Default is left." },
+        "segment": { "name": "Segment", "description": "Stripes only (NL62). Protocol value from 0 to 255. Default is 50." },
         "config_entry_id": { "name": "Integration entry ID" }
       }
     },
     "upload_scene": {
       "name": "Upload scene",
-      "description": "Save and verify an NL45 or NL67 palette animation. NL67 requires firmware 5+ and native effectV2. Enforces the 12-scene limit and never replaces an existing scene.",
+      "description": "Save and verify an NL45, NL62 or NL67 palette animation. NL67 requires firmware 5+ and native effectV2. Flow and stripes are NL62 only. Enforces the 12-scene limit and never replaces an existing scene.",
       "fields": {
         "scene": { "name": "Scene UUID", "description": "UUID from the integration's downloaded scene database." },
         "effect": { "name": "Animation" },
         "transition": { "name": "Transition", "description": "Protocol value from 0 to 255, not seconds. NL67 requires at least 1. Default is 24." },
+        "direction": { "name": "Direction", "description": "Flow and stripes only (NL62). Default is left." },
+        "segment": { "name": "Segment", "description": "Stripes only (NL62). Protocol value from 0 to 255. Default is 50." },
         "activate": { "name": "Activate after upload", "description": "Off by default. Activate only after successful readback verification." },
         "config_entry_id": { "name": "Integration entry ID" }
       }

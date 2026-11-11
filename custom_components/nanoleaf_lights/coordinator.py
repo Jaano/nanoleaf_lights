@@ -33,12 +33,15 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .nl_ltpdu import (
+    SCENE_DIRECTIONS,
     AuthRejectedError,
+    EndpointStatusError,
     LtpduSession,
     SceneLookup,
     SessionExpiredError,
     _parse_scene_data,
     build_simple_scene_tlv,
+    preset_scene_name,
 )
 from .nl_ltpdu_v3 import (
     EFFECT_ID_MAX,
@@ -57,6 +60,12 @@ _T = TypeVar("_T")
 _SETTINGS_INTERVAL = 60.0
 _THREAD_INTERVAL = 60.0
 _SCENE_LIMIT = 12
+
+
+def _rejected_message(exc: EndpointStatusError) -> str:
+    return f"Device rejected {exc.endpoint} (status 0x{exc.status:02x})"
+
+
 _THREAD_QUERIES = {
     "capabilities": "query_thread_capabilities",
     "role": "query_thread_role",
@@ -226,6 +235,30 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         )
 
+    def _model_number(self) -> str | None:
+        device = (self.data or {}).get("device") or {}
+        return device.get("model_number") or self.config_entry.data.get(CONF_MODEL)
+
+    def _fallback_scene_name(self, handle: bytes) -> str:
+        """Name for a scene with no stored name: a model preset, else its handle."""
+        return preset_scene_name(self._model_number(), handle) or scene_fallback_name(handle)
+
+    async def _resolve_scene_name(self, handle: bytes) -> str:
+        """Name a stored scene: fixed model preset, device name, palette match, handle."""
+        assert self._session is not None
+        # Preset IDs are fixed by the app, so they win over any palette match.
+        preset = preset_scene_name(self._model_number(), handle)
+        if preset:
+            return preset
+        try:
+            detail = await self._session.get_scene(handle, timeout=10.0)
+            palette = (detail or {}).get("palette", "")
+            match = self._scene_lookup.resolve(palette) if palette else None
+            reported_name = (detail or {}).get("name")
+            return reported_name or (match[0] if match else scene_fallback_name(handle))
+        except Exception:
+            return scene_fallback_name(handle)
+
     async def _refresh_static_data(self) -> None:
         """Query slow-changing device and Thread info once after a fresh session."""
         assert self._session is not None
@@ -244,14 +277,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         scene_names: dict[bytes, str] = {}
         for b in scene_handles:
-            try:
-                detail = await self._session.get_scene(b, timeout=10.0)
-                palette = (detail or {}).get("palette", "")
-                match = self._scene_lookup.resolve(palette) if palette else None
-                reported_name = (detail or {}).get("name")
-                scene_names[b] = reported_name or (match[0] if match else scene_fallback_name(b))
-            except Exception:
-                scene_names[b] = scene_fallback_name(b)
+            scene_names[b] = await self._resolve_scene_name(b)
 
         # Merge into current data (may still be None on first run).
         existing = dict(self.data or {})
@@ -396,10 +422,17 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 await self._session.reauth()
                 light, current_scene = await _query()
+            except EndpointStatusError as exc:
+                # The reauthenticated session is healthy; the device rejected one endpoint.
+                raise UpdateFailed(_rejected_message(exc)) from exc
             except Exception as exc:
                 _LOGGER.warning("Reauth failed: %s — will reconnect", exc)
                 await self._safe_close()
                 raise UpdateFailed("Reauth failed, will reconnect") from exc
+        except EndpointStatusError as exc:
+            # The device answered, so the session is healthy. Reconnecting would not
+            # help and only churns CoAP contexts; keep the session for the next poll.
+            raise UpdateFailed(_rejected_message(exc)) from exc
         except Exception as exc:
             _LOGGER.debug("Query failed: %s — will reconnect", exc)
             await self._safe_close()
@@ -463,9 +496,14 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 await self._session.reauth()
                 return await action(self._session)
+            except EndpointStatusError as exc:
+                raise HomeAssistantError(f"Command rejected: {exc}") from exc
             except Exception as exc:
                 await self._safe_close()
                 raise HomeAssistantError(f"Session error: {exc}") from exc
+        except EndpointStatusError as exc:
+            # The device rejected this command but the session itself is fine.
+            raise HomeAssistantError(f"Command rejected: {exc}") from exc
         except HomeAssistantError:
             raise
         except Exception as exc:
@@ -481,7 +519,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> _T:
         async def execute(session: Session) -> _T:
             if not isinstance(session, LtpduSession):
-                raise HomeAssistantError("Scene upload requires the NL45 legacy protocol")
+                raise HomeAssistantError("Scene upload requires the legacy protocol")
             return await action(session)
 
         return await self.async_service_call(execute)
@@ -504,13 +542,23 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         *,
         upload: bool,
         activate: bool = False,
+        direction: str = "left",
+        segment: int = 50,
     ) -> None:
-        """Preview or save a supported palette animation without replacing scenes."""
+        """Preview or save a supported palette animation without replacing scenes.
+
+        ``direction`` and ``segment`` only matter for flow and stripes (NL62).
+        """
         self._require_feature("scene_upload")
-        if effect not in {"fade", "random", "highlight"}:
-            raise HomeAssistantError("Unsupported scene animation")
+        supported = (self.data or {}).get("capabilities", {}).get("scene_effects") or ()
+        if effect not in supported:
+            raise HomeAssistantError("The bulb does not support this scene animation")
         if type(transition) is not int or not 0 <= transition <= 255:
             raise HomeAssistantError("Transition must be an integer from 0 to 255")
+        if direction not in SCENE_DIRECTIONS:
+            raise HomeAssistantError("Direction must be left, right, up or down")
+        if type(segment) is not int or not 0 <= segment <= 255:
+            raise HomeAssistantError("Segment must be an integer from 0 to 255")
         if activate and not upload:
             raise HomeAssistantError("Activation is only available after upload")
         try:
@@ -523,7 +571,10 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             payload = (
                 build_effect_v2(palette, 1, name, effect=effect, transition=transition)
                 if native else
-                build_simple_scene_tlv(palette, 1, effect=effect, transition=transition)
+                build_simple_scene_tlv(
+                    palette, 1, effect=effect, transition=transition,
+                    direction=SCENE_DIRECTIONS[direction], segment=segment,
+                )
             )
         except (OSError, ValueError) as exc:
             raise HomeAssistantError(f"Cannot prepare scene: {exc}") from exc
@@ -545,7 +596,10 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else:
                     await self._native_scene_call(lambda session: session.preview_scene(payload))
             elif upload:
-                await self._upload_scene(name, palette, effect, transition, activate=activate)
+                await self._upload_scene(
+                    name, palette, effect, transition, activate=activate,
+                    direction=SCENE_DIRECTIONS[direction], segment=segment,
+                )
             else:
                 await self._scene_call(lambda session: session.preview_scene(payload))
             await self.async_request_refresh()
@@ -621,7 +675,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         existing = self.data or {}
         names = {
-            handle: existing.get("scene_names", {}).get(handle, scene_fallback_name(handle))
+            handle: existing.get("scene_names", {}).get(handle, self._fallback_scene_name(handle))
             for handle in refreshed
         }
         names[assigned] = name
@@ -637,15 +691,27 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ) from exc
 
     async def _upload_scene(
-        self, name: str, palette: str, effect: str, transition: int, *, activate: bool
+        self,
+        name: str,
+        palette: str,
+        effect: str,
+        transition: int,
+        *,
+        activate: bool,
+        direction: int = 0,
+        segment: int = 50,
     ) -> None:
         handles = await self._scene_call(lambda session: session.list_scenes())
         occupied = set(handles)
+        # IDs 244+ are device presets (e.g. the NL62 Secretlab scenes), not user scenes.
         user_ids = occupied.intersection(range(1, 244))
         if len(user_ids) >= _SCENE_LIMIT:
-            raise HomeAssistantError("NL45 scene storage is full (12 saved user scenes)")
+            raise HomeAssistantError("Scene storage is full (12 saved user scenes)")
         scene_id = next(identifier for identifier in range(1, 244) if identifier not in occupied)
-        payload = build_simple_scene_tlv(palette, scene_id, effect=effect, transition=transition)
+        payload = build_simple_scene_tlv(
+            palette, scene_id, effect=effect, transition=transition,
+            direction=direction, segment=segment,
+        )
         # Each step has its own session recovery. Readback never retries the write.
         try:
             assigned = await self._scene_call(lambda session: session.add_scene(payload))
@@ -685,7 +751,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         existing = self.data or {}
         scene_handles = [bytes([identifier]) for identifier in handles]
         names = {
-            handle: existing.get("scene_names", {}).get(handle, scene_fallback_name(handle))
+            handle: existing.get("scene_names", {}).get(handle, self._fallback_scene_name(handle))
             for handle in scene_handles
         }
         names[assigned] = name
@@ -843,16 +909,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         scene_names: dict[bytes, str] = {}
         if self._session is not None:
             for b in scene_handles:
-                try:
-                    detail = await self._session.get_scene(b, timeout=10.0)
-                    palette = (detail or {}).get("palette", "")
-                    match = self._scene_lookup.resolve(palette) if palette else None
-                    reported_name = (detail or {}).get("name")
-                    scene_names[b] = reported_name or (
-                        match[0] if match else scene_fallback_name(b)
-                    )
-                except Exception:
-                    scene_names[b] = scene_fallback_name(b)
+                scene_names[b] = await self._resolve_scene_name(b)
         self.async_set_updated_data({**existing, "scene_names": scene_names})
 
     # ------------------------------------------------------------------

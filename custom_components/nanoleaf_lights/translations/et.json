@@ -106,7 +106,17 @@
       "options": {
         "fade": "Sujuv üleminek",
         "random": "Juhuslik",
-        "highlight": "Esiletõstmine"
+        "highlight": "Esiletõstmine",
+        "flow": "Voog",
+        "stripes": "Triibud"
+      }
+    },
+    "scene_direction": {
+      "options": {
+        "left": "Vasakule",
+        "right": "Paremale",
+        "up": "Üles",
+        "down": "Alla"
       }
     },
     "circadian_mode": {
@@ -119,21 +129,25 @@
   "services": {
     "preview_scene": {
       "name": "Vaata stseeni eelvaadet",
-      "description": "Esita NL45 või NL67 lambil paletianimatsioon ilma seda salvestamata. NL67 vajab püsivara 5+ ja effectV2 protokolli.",
+      "description": "Esita NL45, NL62 või NL67 seadmel paletianimatsioon ilma seda salvestamata. NL67 vajab püsivara 5+ ja effectV2 protokolli. Voog ja triibud on ainult NL62 jaoks.",
       "fields": {
         "scene": { "name": "Stseeni UUID", "description": "UUID integratsiooni allalaaditud stseenide andmebaasist." },
         "effect": { "name": "Animatsioon" },
         "transition": { "name": "Üleminek", "description": "Protokolli väärtus 0 kuni 255, mitte sekundid. NL67 miinimum on 1. Vaikeväärtus on 24." },
+        "direction": { "name": "Suund", "description": "Ainult voog ja triibud (NL62). Vaikeväärtus on vasakule." },
+        "segment": { "name": "Segment", "description": "Ainult triibud (NL62). Protokolli väärtus 0 kuni 255. Vaikeväärtus on 50." },
         "config_entry_id": { "name": "Integratsiooni kirje ID" }
       }
     },
     "upload_scene": {
       "name": "Laadi stseen lambile",
-      "description": "Salvesta ja kontrolli NL45 või NL67 paletianimatsioon. NL67 vajab püsivara 5+ ja effectV2 protokolli. Lubatud on kuni 12 stseeni; olemasolevaid stseene ei asendata.",
+      "description": "Salvesta ja kontrolli NL45, NL62 või NL67 paletianimatsioon. NL67 vajab püsivara 5+ ja effectV2 protokolli. Voog ja triibud on ainult NL62 jaoks. Lubatud on kuni 12 stseeni; olemasolevaid stseene ei asendata.",
       "fields": {
         "scene": { "name": "Stseeni UUID", "description": "UUID integratsiooni allalaaditud stseenide andmebaasist." },
         "effect": { "name": "Animatsioon" },
         "transition": { "name": "Üleminek", "description": "Protokolli väärtus 0 kuni 255, mitte sekundid. NL67 miinimum on 1. Vaikeväärtus on 24." },
+        "direction": { "name": "Suund", "description": "Ainult voog ja triibud (NL62). Vaikeväärtus on vasakule." },
+        "segment": { "name": "Segment", "description": "Ainult triibud (NL62). Protokolli väärtus 0 kuni 255. Vaikeväärtus on 50." },
         "activate": { "name": "Aktiveeri pärast üleslaadimist", "description": "Vaikimisi väljas. Aktiveeri alles pärast edukat tagasilugemist." },
         "config_entry_id": { "name": "Integratsiooni kirje ID" }
       }
