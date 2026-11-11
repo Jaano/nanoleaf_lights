@@ -11,6 +11,6 @@
     "aiocoap==0.4.17",
     "cryptography>=42.0"
   ],
-  "version": "0.4.4-beta.2",
+  "version": "0.4.4",
   "zeroconf": [{"type": "_ltpdu._udp.local."}]
 }
