@@ -1,13 +1,16 @@
 {
   "domain": "nanoleaf_lights",
   "name": "Nanoleaf Lights (++)",
-  "version": "0.4.3",
+  "codeowners": ["@Jaano"],
   "config_flow": true,
   "dependencies": [],
+  "documentation": "https://github.com/Jaano/nanoleaf_lights",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Jaano/nanoleaf_lights/issues",
   "requirements": [
     "aiocoap==0.4.17",
     "cryptography>=42.0"
   ],
-  "zeroconf": [{"type": "_ltpdu._udp.local."}],
-  "iot_class": "local_polling"
+  "version": "0.4.4-beta.2",
+  "zeroconf": [{"type": "_ltpdu._udp.local."}]
 }
