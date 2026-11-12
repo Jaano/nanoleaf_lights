@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 
-from .entity import NanoleafLtpduEntity
+from .entity import NanoleafLtpduEntity, entity_unique_id
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -36,7 +36,7 @@ class NanoleafCircadianSwitch(NanoleafLtpduEntity, SwitchEntity):
 
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}-circadian"
+        self._attr_unique_id = entity_unique_id(coordinator.config_entry, "circadian")
 
     @property
     def is_on(self) -> bool | None:
@@ -75,7 +75,7 @@ class NanoleafPowerLossRecoverySwitch(NanoleafLtpduEntity, SwitchEntity):
 
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}-power-loss-recovery"
+        self._attr_unique_id = entity_unique_id(coordinator.config_entry, "power-loss-recovery")
 
     @property
     def is_on(self) -> bool | None:

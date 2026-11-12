@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import NanoleafLtpduCoordinator
-from .entity import NanoleafLtpduEntity
+from .entity import NanoleafLtpduEntity, entity_unique_id
 from .nl_api import NanoleafCloudApi
 
 
@@ -37,7 +37,7 @@ class NanoleafIdentifyButton(NanoleafLtpduEntity, ButtonEntity):  # type: ignore
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
         entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id}-identify"
+        self._attr_unique_id = entity_unique_id(entry, "identify")
 
     async def async_press(self) -> None:
         """Trigger the device to blink for identification."""
@@ -54,7 +54,7 @@ class NanoleafRefreshScenesButton(NanoleafLtpduEntity, ButtonEntity):  # type: i
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
         entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id}-refresh-scenes"
+        self._attr_unique_id = entity_unique_id(entry, "refresh-scenes")
 
     async def async_press(self) -> None:
         """Download updated scene data from the Nanoleaf cloud and reload names."""
@@ -73,7 +73,7 @@ class NanoleafSyncClockLocationButton(NanoleafLtpduEntity, ButtonEntity):
 
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}-sync-clock-location"
+        self._attr_unique_id = entity_unique_id(coordinator.config_entry, "sync-clock-location")
 
     @property
     def available(self) -> bool:

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_IP_ADDRESS,
@@ -14,11 +17,14 @@ from .const import (
     CONF_NAME,
     CONF_PORT,
     CONF_TOKEN,
+    DOMAIN,
 )
 from .coordinator import NanoleafLtpduCoordinator
 from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
     Platform.LIGHT,
@@ -36,22 +42,32 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a config entry: create coordinator, do a non-blocking first refresh."""
+    """Set up a config entry once the device has answered."""
+    await _async_migrate_unique_ids(hass, entry)
     coordinator = NanoleafLtpduCoordinator(hass, entry)
 
-    # Do not use async_config_entry_first_refresh(): it raises
-    # ConfigEntryNotReady on failure, which puts the entry into "Needs
-    # attention" whenever the device is merely powered off. async_refresh()
-    # never raises; the coordinator keeps polling every UPDATE_INTERVAL and
-    # entities recover automatically once the device comes back. If the
-    # stored token is rejected, the coordinator raises ConfigEntryAuthFailed
-    # internally and the DataUpdateCoordinator machinery starts the reauth
-    # flow on its own.
-    await coordinator.async_refresh()
+    # Unreachable: ConfigEntryNotReady (setup retries). Token rejected: reauth.
+    await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_migrate_unique_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Replace colliding "None-" entity unique IDs with the config entry ID."""
+    if entry.unique_id is not None:
+        return
+    legacy_prefix = "None-"
+
+    @callback
+    def _migrate(entity_entry: er.RegistryEntry) -> dict[str, Any] | None:
+        if not entity_entry.unique_id.startswith(legacy_prefix):
+            return None
+        suffix = entity_entry.unique_id[len(legacy_prefix) :]
+        return {"new_unique_id": f"{entry.entry_id}-{suffix}"}
+
+    await er.async_migrate_entries(hass, entry.entry_id, _migrate)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

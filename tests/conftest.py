@@ -120,9 +120,49 @@ def ha_modules(factory, monkeypatch):
     class Entity:
         pass
 
+    class AbortFlow(Exception):
+        """Mirror of homeassistant.data_entry_flow.AbortFlow."""
+
+        def __init__(self, reason):
+            super().__init__(reason)
+            self.reason = reason
+
     class ConfigFlow:
+        """Minimal HA ConfigFlow; tests set ``existing_entries``."""
+
+        existing_entries: ClassVar[list] = []
+
         def __init_subclass__(cls, **kwargs):
             pass
+
+        @property
+        def context(self):
+            if "_context" not in self.__dict__:
+                self.__dict__["_context"] = {}
+            return self.__dict__["_context"]
+
+        @property
+        def unique_id(self):
+            return self.context.get("unique_id")
+
+        async def async_set_unique_id(self, unique_id, *, raise_on_progress=True):
+            self.context["unique_id"] = unique_id
+            self.context["raise_on_progress"] = raise_on_progress
+
+        def _abort_if_unique_id_configured(self, updates=None):
+            for entry in self.existing_entries:
+                if self.unique_id is not None and entry.unique_id == self.unique_id:
+                    if updates:
+                        entry.data = {**entry.data, **updates}
+                    raise AbortFlow("already_configured")
+
+        def _async_abort_entries_match(self, match_dict):
+            for entry in self.existing_entries:
+                if all(entry.data.get(key) == value for key, value in match_dict.items()):
+                    raise AbortFlow("already_configured")
+
+        def async_create_entry(self, **kwargs):
+            return {"type": "create_entry", **kwargs}
 
         def async_show_form(self, **kwargs):
             return kwargs
@@ -141,17 +181,19 @@ def ha_modules(factory, monkeypatch):
         ConfigEntry=object,
         ConfigFlow=ConfigFlow,
     )
+    register("homeassistant.data_entry_flow", AbortFlow=AbortFlow)
     register("homeassistant.core", HomeAssistant=object, callback=lambda method: method)
     register(
         "homeassistant.exceptions",
-        ConfigEntryAuthFailed=RuntimeError,
+        # Distinct, as in Home Assistant.
+        ConfigEntryAuthFailed=type("ConfigEntryAuthFailed", (RuntimeError,), {}),
         HomeAssistantError=RuntimeError,
     )
     register("homeassistant.helpers")
     register(
         "homeassistant.helpers.update_coordinator",
         DataUpdateCoordinator=Coordinator,
-        UpdateFailed=RuntimeError,
+        UpdateFailed=type("UpdateFailed", (RuntimeError,), {}),
     )
     register("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
     register("homeassistant.util")
@@ -185,7 +227,11 @@ def ha_modules(factory, monkeypatch):
     legacy.SCENE_DIRECTIONS = SCENE_DIRECTIONS
     legacy.SceneLookup = object
     legacy.SessionExpiredError = type("SessionExpiredError", (RuntimeError,), {})
-    register(f"{factory.package}.entity", NanoleafLtpduEntity=type("NanoleafEntity", (), {}))
+    register(
+        f"{factory.package}.entity",
+        NanoleafLtpduEntity=type("NanoleafEntity", (), {}),
+        entity_unique_id=lambda entry, suffix: f"{entry.unique_id or entry.entry_id}-{suffix}",
+    )
 
     def load(name):
         spec = importlib.util.spec_from_file_location(
@@ -197,5 +243,8 @@ def ha_modules(factory, monkeypatch):
         return module
 
     return SimpleNamespace(
-        coordinator=load("coordinator"), light=load("light"), config_flow=load("config_flow")
+        coordinator=load("coordinator"),
+        light=load("light"),
+        config_flow=load("config_flow"),
+        AbortFlow=AbortFlow,
     )

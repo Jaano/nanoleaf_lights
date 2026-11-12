@@ -214,6 +214,62 @@ async def test_retry_is_identical_and_malformed_packets_are_ignored():
         transport.close()
 
 
+def test_retransmit_delay_depends_on_the_endpoint():
+    import nl_ltpdu_v3
+
+    assert nl_ltpdu_v3.retransmit_after("nlsecure") == 15.0
+    for endpoint in ("nlltpdu", "nlinfo", "nlevents", "nlidentify"):
+        assert nl_ltpdu_v3.retransmit_after(endpoint) == 5.0
+
+
+async def test_lost_datagram_is_resent_after_the_retransmit_delay_not_the_timeout(
+    monkeypatch,
+):
+    import nl_ltpdu_v3
+
+    monkeypatch.setattr(nl_ltpdu_v3, "_RETRANSMIT_AFTER", 0.02)
+    loop = asyncio.get_running_loop()
+    transport, peer = await loop.create_datagram_endpoint(
+        lambda: Peer(drop_first=True), local_addr=("127.0.0.1", 0)
+    )
+    client, protocol = await loop.create_datagram_endpoint(
+        _Datagrams, remote_addr=("127.0.0.1", transport.get_extra_info("sockname")[1])
+    )
+    session = LtpduV3Session(client, protocol)
+    try:
+        started = loop.time()
+        status, _, _ = await session._exchange("nlinfo", b"", method=0, timeout=30.0)
+        assert status == 2
+        assert loop.time() - started < 5.0
+        assert len(peer.seen) == 2
+        assert peer.seen[0] == peer.seen[1]
+    finally:
+        await session.close()
+        transport.close()
+
+
+async def test_retransmit_delay_never_exceeds_the_caller_timeout(monkeypatch):
+    import nl_ltpdu_v3
+
+    monkeypatch.setattr(nl_ltpdu_v3, "_RETRANSMIT_AFTER", 30.0)
+    loop = asyncio.get_running_loop()
+    server, _ = await loop.create_datagram_endpoint(
+        asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0)
+    )
+    client, protocol = await loop.create_datagram_endpoint(
+        _Datagrams, remote_addr=("127.0.0.1", server.get_extra_info("sockname")[1])
+    )
+    session = LtpduV3Session(client, protocol)
+    try:
+        started = loop.time()
+        with pytest.raises(TimeoutError, match="nlinfo timed out"):
+            await session._exchange("nlinfo", b"", method=0, timeout=0.02, attempts=2)
+        assert loop.time() - started < 5.0
+    finally:
+        await session.close()
+        server.close()
+
+
 async def test_cancelled_exchange_removes_pending_and_breaks_cipher():
     loop = asyncio.get_running_loop()
     server, _ = await loop.create_datagram_endpoint(
@@ -368,12 +424,12 @@ def test_coap_transport_matches_platform(platform, transport):
         patch.setattr(sys, "platform", platform)
         patch.setitem(sys.modules, spec.name, module)
         spec.loader.exec_module(module)
-    assert module._COAP_TRANSPORTS == [transport]
+    assert [transport] == module._COAP_TRANSPORTS
 
 
 async def test_kex_names_transport_and_skips_default_probing(monkeypatch):
     # Default-transport probing imports optional packages and scans sys.path on the loop.
-    def probing(*_args, **_kwargs):
+    def probing(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("default transport probing must not run")
 
     context = Context(b"\x01")

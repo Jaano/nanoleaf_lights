@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import NanoleafLtpduCoordinator
-from .entity import NanoleafLtpduEntity
+from .entity import NanoleafLtpduEntity, entity_unique_id
 
 
 @dataclass(frozen=True)
@@ -236,7 +236,7 @@ class NanoleafDiagnosticSensor(NanoleafLtpduEntity, SensorEntity):  # type: igno
         super().__init__(coordinator)
         self.entity_description = description  # type: ignore[assignment]
         entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id}-{description.key}"
+        self._attr_unique_id = entity_unique_id(entry, description.key)
 
     @property
     def native_value(self) -> Any:  # type: ignore[override]
@@ -271,7 +271,7 @@ class NanoleafMotionCapabilitiesSensor(NanoleafLtpduEntity, SensorEntity):
 
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}-motion-capabilities"
+        self._attr_unique_id = entity_unique_id(coordinator.config_entry, "motion-capabilities")
 
     @property
     def native_value(self) -> str | None:

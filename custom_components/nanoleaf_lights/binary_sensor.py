@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import NanoleafLtpduCoordinator
-from .entity import NanoleafLtpduEntity
+from .entity import NanoleafLtpduEntity, entity_unique_id
 
 
 async def async_setup_entry(
@@ -35,7 +35,7 @@ class NanoleafConnectedSensor(NanoleafLtpduEntity, BinarySensorEntity):  # type:
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
         entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id}-connected"
+        self._attr_unique_id = entity_unique_id(entry, "connected")
 
     @property
     def available(self) -> bool:

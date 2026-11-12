@@ -390,8 +390,8 @@ _HOMEKIT_MODELS = {"NL45", "NL55", "NL58", "NL62"}
 _NO_COLOR_TEMP_MODELS = frozenset({"NL62"})
 # Legacy models that store palette scenes through the simple-scene TLV (ci 0x0702).
 _SIMPLE_SCENE_UPLOAD_MODELS = frozenset({"NL45", "NL62"})
-# Palette animations a device can run. The Secretlab MAGRGB strip (NL62) alone adds flow
-# and stripes; the Nanoleaf app refuses to send those effect types to any other model.
+# Palette animations a device can run. Only the Secretlab MAGRGB strip (NL62) supports
+# flow and stripes.
 _BASE_SCENE_EFFECTS = ("fade", "random", "highlight")
 _SCENE_EFFECTS_BY_MODEL = {"NL62": (*_BASE_SCENE_EFFECTS, "flow", "stripes")}
 _THREAD_MODELS = {"NL53", "NL54", "NL65", "NL67", "NL68", "SQUB01", "SQUB03"}
@@ -1229,6 +1229,15 @@ class V3Controls:
 _ENDPOINTS = {"nlsecure": 1, "nlltpdu": 2, "nlevents": 3, "nlidentify": 4, "nlinfo": 5}
 _CREDENTIAL_PREFIX = b"NLV3\x01"
 
+# Seconds before an unanswered request is resent.
+_SECURE_RETRANSMIT_AFTER = 15.0
+_RETRANSMIT_AFTER = 5.0
+
+
+def retransmit_after(endpoint: str) -> float:
+    """Seconds to wait for a reply before resending a request to this endpoint."""
+    return _SECURE_RETRANSMIT_AFTER if endpoint == "nlsecure" else _RETRANSMIT_AFTER
+
 
 def _operation_tlv(tag: int, value: bytes) -> bytes:
     return struct.pack("!HH", tag, len(value)) + value
@@ -1361,12 +1370,13 @@ class LtpduV3Session(V3Controls):
         )
         future = asyncio.get_running_loop().create_future()
         self._protocol.pending[message_id] = future
+        attempt_timeout = min(timeout, retransmit_after(endpoint))
         try:
             for attempt in range(attempts):
                 # Resend the identical ciphertext and ID, never advance cipher on retry.
                 self._transport.sendto(packet)
                 try:
-                    return await asyncio.wait_for(asyncio.shield(future), timeout)
+                    return await asyncio.wait_for(asyncio.shield(future), attempt_timeout)
                 except TimeoutError:
                     if attempt == attempts - 1:
                         raise TimeoutError(f"LTPDUv3 {endpoint} timed out") from None

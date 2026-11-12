@@ -9,8 +9,10 @@
   "issue_tracker": "https://github.com/Jaano/nanoleaf_lights/issues",
   "requirements": [
     "aiocoap==0.4.17",
-    "cryptography>=42.0"
+    "cryptography>=42.0",
+    "requests",
+    "zeroconf"
   ],
-  "version": "0.4.4",
+  "version": "0.5.0-beta1",
   "zeroconf": [{"type": "_ltpdu._udp.local."}]
 }

@@ -24,7 +24,7 @@ from .const import (
     MIN_COLOR_TEMP_KELVIN,
 )
 from .coordinator import NanoleafLtpduCoordinator
-from .entity import NanoleafLtpduEntity
+from .entity import NanoleafLtpduEntity, entity_unique_id
 from .nl_ltpdu_v3 import color_temperature_range, device_capabilities
 from .session import scene_fallback_name, scene_handle_bytes
 
@@ -52,7 +52,7 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
     def __init__(self, coordinator: NanoleafLtpduCoordinator) -> None:
         super().__init__(coordinator)
         entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id}-light"
+        self._attr_unique_id = entity_unique_id(entry, "light")
         self._attr_name = None  # Use device name directly (has_entity_name + no suffix)
         # Track last-used color mode so HA reports the correct one.
         self._color_mode: ColorMode = (
@@ -189,13 +189,11 @@ class NanoleafLtpduLight(NanoleafLtpduEntity, LightEntity):
             set_kwargs["color_temp"] = ct_kelvin
             self._color_mode = ColorMode.COLOR_TEMP
 
-        await self.coordinator.async_service_call(lambda s: s.set_light_state(**set_kwargs))
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_light_state(**set_kwargs)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the light."""
-        await self.coordinator.async_service_call(lambda s: s.set_power(False))
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_light_state(on=False)
 
     async def _play_effect(self, effect_name: str) -> None:
         """Resolve an effect name to a scene handle and play it."""

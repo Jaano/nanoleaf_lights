@@ -27,6 +27,7 @@ def settings(ha_modules):
     coordinator._settings_updated_at = 0.0
     coordinator._thread_updated_at = 0.0
     coordinator._settings_lock = asyncio.Lock()
+    coordinator._light_written = {}
     coordinator._scene_lookup = object()
     coordinator.data = {
         "device": {"model_number": "NL67", "firmware_version": "5.1.45"},
@@ -550,3 +551,155 @@ def test_fallback_name_prefers_preset_then_handle(settings):
     assert coordinator._fallback_scene_name(b"\x07") == "Scene 0x07"
     coordinator.data["device"] = {"model_number": "NL45"}
     assert coordinator._fallback_scene_name(b"\xfc") == "Scene 0xfc"
+
+
+# -- Setup connects before entities exist (test-before-setup) ---------------------------
+
+
+@pytest.fixture
+def setup_coordinator(settings):
+    coordinator, device = settings
+    coordinator._session = None
+    coordinator._consecutive_auth_failures = 0
+    coordinator._AUTH_FAILURE_THRESHOLD = 3
+    coordinator._open_session = AsyncMock(return_value=device)
+    return coordinator, device
+
+
+async def test_setup_connects_and_reads_static_data(setup_coordinator):
+    coordinator, device = setup_coordinator
+    await coordinator._async_setup()
+    assert coordinator._session is device
+    coordinator._open_session.assert_awaited_once()
+    device.query_device_info.assert_awaited_once()
+    device.list_scenes.assert_awaited_once()
+
+
+async def test_setup_loads_the_scene_catalogue_before_connecting(setup_coordinator):
+    coordinator, device = setup_coordinator
+    coordinator._scene_lookup = None
+    order = []
+
+    async def reload():
+        order.append("scenes")
+        coordinator._scene_lookup = object()
+
+    async def open_session():
+        order.append("connect")
+        return device
+
+    coordinator.async_reload_scenes = reload
+    coordinator._open_session = AsyncMock(side_effect=open_session)
+    await coordinator._async_setup()
+    assert order == ["scenes", "connect"]
+
+
+async def test_unreachable_device_fails_setup_without_retrying_in_place(
+    setup_coordinator, ha_modules
+):
+    coordinator, _ = setup_coordinator
+    coordinator._open_session.side_effect = OSError("no route to host")
+    with pytest.raises(ha_modules.coordinator.UpdateFailed, match="Cannot open session"):
+        await coordinator._async_setup()
+    coordinator._open_session.assert_awaited_once()
+
+
+async def test_setup_retries_token_rejection_in_place_and_recovers(setup_coordinator, ha_modules):
+    coordinator, device = setup_coordinator
+    rejected = ha_modules.coordinator.AuthRejectedError("rejected")
+    coordinator._open_session.side_effect = [rejected, rejected, device]
+    await coordinator._async_setup()
+    assert coordinator._open_session.await_count == 3
+    assert coordinator._consecutive_auth_failures == 0
+    assert coordinator._session is device
+
+
+async def test_persistent_token_rejection_starts_reauth_during_setup(
+    setup_coordinator, ha_modules
+):
+    # Setup retries recreate the coordinator, which resets the counter.
+    coordinator, _ = setup_coordinator
+    coordinator._open_session.side_effect = ha_modules.coordinator.AuthRejectedError("rejected")
+    with pytest.raises(ha_modules.coordinator.ConfigEntryAuthFailed, match="after 3 attempts"):
+        await coordinator._async_setup()
+    assert coordinator._open_session.await_count == 3
+
+
+async def test_static_data_failure_during_setup_fails_setup(setup_coordinator, ha_modules):
+    coordinator, device = setup_coordinator
+    device.query_device_info.side_effect = TimeoutError("gone")
+    coordinator._refresh_device_info = AsyncMock(side_effect=TimeoutError("gone"))
+    with pytest.raises(ha_modules.coordinator.UpdateFailed, match="device diagnostics"):
+        await coordinator._async_setup()
+    device.close.assert_awaited_once()
+    assert coordinator._session is None
+    coordinator._open_session.assert_awaited_once()
+
+
+# -- Light commands publish the accepted state without waiting for a poll ---------------
+
+
+async def test_light_command_publishes_the_accepted_state_at_once(settings):
+    coordinator, device = settings
+    device.set_light_state = AsyncMock()
+    coordinator.data["light"] = {"power": False, "brightness": 10, "hue": 0, "color_mode": "hs"}
+    await coordinator.async_set_light_state(on=True, brightness=80, hue=120, saturation=50)
+    device.set_light_state.assert_awaited_once_with(
+        on=True, brightness=80, hue=120, saturation=50
+    )
+    assert coordinator.data["light"] == {
+        "power": True, "brightness": 80, "hue": 120, "saturation": 50, "color_mode": "hs",
+    }
+    device.query_light_state.assert_not_awaited()
+
+
+async def test_light_command_maps_color_temperature_and_power_off(settings):
+    coordinator, device = settings
+    device.set_light_state = AsyncMock()
+    coordinator.data["light"] = {"power": True, "color_temp": 2700}
+    await coordinator.async_set_light_state(color_temp=4000)
+    assert coordinator.data["light"] == {"power": True, "color_temp": 4000}
+    await coordinator.async_set_light_state(on=False)
+    assert coordinator.data["light"] == {"power": False, "color_temp": 4000}
+
+
+async def test_light_command_before_the_first_poll_starts_from_empty_state(settings):
+    coordinator, device = settings
+    device.set_light_state = AsyncMock()
+    coordinator.data.pop("light", None)
+    await coordinator.async_set_light_state(on=True)
+    assert coordinator.data["light"] == {"power": True}
+
+
+async def test_rejected_light_command_publishes_nothing(settings, ha_modules):
+    coordinator, device = settings
+    device.set_light_state = AsyncMock(side_effect=OSError("network down"))
+    coordinator.data["light"] = {"power": False}
+    with pytest.raises(ha_modules.coordinator.HomeAssistantError, match="Command failed"):
+        await coordinator.async_set_light_state(on=True)
+    assert coordinator.data.get("light") == {"power": False}
+
+
+async def test_write_during_a_poll_wins_over_the_polls_older_read(settings):
+    coordinator, device = settings
+    device.set_light_state = AsyncMock()
+    coordinator.data["light"] = {"power": False, "brightness": 40}
+
+    async def read_then_tap(**_: object) -> dict:
+        stale = {"power": False, "brightness": 40}
+        await coordinator.async_set_light_state(on=True, brightness=90)
+        return stale
+
+    device.query_light_state.side_effect = read_then_tap
+    result = await coordinator._async_update_data()
+    assert result["light"] == {"power": True, "brightness": 90}
+
+
+async def test_write_before_a_poll_does_not_mask_later_changes(settings):
+    # E.g. switched off from another controller after the write.
+    coordinator, device = settings
+    device.set_light_state = AsyncMock()
+    await coordinator.async_set_light_state(on=True)
+    device.query_light_state.return_value = {"power": False}
+    result = await coordinator._async_update_data()
+    assert result["light"] == {"power": False}

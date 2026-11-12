@@ -10,3 +10,4 @@ __pycache__/
 
 /*.json
 !/hacs.json
+.coverage

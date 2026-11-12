@@ -1,10 +1,27 @@
 """Base entity class for Nanoleaf light entities."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NanoleafLtpduCoordinator
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+
+
+def device_key(entry: ConfigEntry) -> str:
+    """EUI-64 unique ID, or the entry ID for manual entries without one."""
+    return entry.unique_id or entry.entry_id
+
+
+def entity_unique_id(entry: ConfigEntry, suffix: str) -> str:
+    """Build an entity unique ID that is unique across all config entries."""
+    return f"{device_key(entry)}-{suffix}"
 
 
 class NanoleafLtpduEntity(CoordinatorEntity[NanoleafLtpduCoordinator]):
@@ -28,7 +45,7 @@ class NanoleafLtpduEntity(CoordinatorEntity[NanoleafLtpduCoordinator]):
             if len(raw) == 16:
                 connections.add(("eui64", ":".join(raw[i : i + 2] for i in range(0, 16, 2))))
         return DeviceInfo(
-            identifiers={(DOMAIN, entry.unique_id or entry.entry_id)},
+            identifiers={(DOMAIN, device_key(entry))},
             name=entry.data.get("name", "Nanoleaf light"),
             model=entry.data.get("model"),
             manufacturer="Nanoleaf",

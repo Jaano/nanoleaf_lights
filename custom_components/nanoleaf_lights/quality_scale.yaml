@@ -1,0 +1,63 @@
+# Home Assistant integration quality scale: Bronze tier.
+# Rules: https://contributors.home-assistant.io/core/quality-scale/rules/
+rules:
+  action-setup:
+    status: done
+    comment: Actions are registered in async_setup; every handler validates its targets.
+  appropriate-polling:
+    status: done
+    comment: >-
+      Light state every 5 seconds (local device; state can change from other
+      controllers); settings and Thread readbacks every 60 seconds.
+  brands:
+    status: done
+    comment: Icons and logos ship in the integration's brand/ directory.
+  common-modules:
+    status: done
+    comment: Coordinator in coordinator.py, base entity in entity.py.
+  config-flow:
+    status: done
+    comment: Zeroconf discovery and manual setup; every field has a data_description.
+  config-flow-test-coverage:
+    status: done
+    comment: tests/test_config_flow.py covers config_flow.py fully, including error recovery.
+  dependency-transparency:
+    status: done
+    comment: >-
+      aiocoap, cryptography, requests and zeroconf are open source and published on
+      PyPI. requests and zeroconf are also Home Assistant core dependencies.
+  docs-actions: done
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
+  entity-event-setup:
+    status: exempt
+    comment: >-
+      Entities subscribe to nothing themselves; CoordinatorEntity manages the
+      coordinator listener.
+  entity-unique-id:
+    status: done
+    comment: >-
+      Built from the device EUI-64, or the config entry ID when the EUI-64 could
+      not be read. Older "None-" prefixed IDs are migrated at setup.
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: done
+    comment: Manual setup connects before pairing; pairing itself proves the connection.
+  test-before-setup:
+    status: done
+    comment: >-
+      async_config_entry_first_refresh connects first: an unreachable device raises
+      ConfigEntryNotReady, a rejected token raises ConfigEntryAuthFailed.
+  unique-config-entry:
+    status: done
+    comment: >-
+      Unique ID from the EUI-64; discovery and manual setup also refuse an address
+      that is already configured.

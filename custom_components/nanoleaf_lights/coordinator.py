@@ -172,6 +172,8 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.connected: bool = False
         self._consecutive_auth_failures: int = 0
         self._AUTH_FAILURE_THRESHOLD = 3
+        # Light writes accepted during the current poll; they override its older reads.
+        self._light_written: dict[str, Any] = {}
         self.scenes_path: Path = (
             Path(hass.config.config_dir) / "www" / PUBLIC_SCENES_DIR / SCENES_FILENAME
         )
@@ -246,7 +248,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _resolve_scene_name(self, handle: bytes) -> str:
         """Name a stored scene: fixed model preset, device name, palette match, handle."""
         assert self._session is not None
-        # Preset IDs are fixed by the app, so they win over any palette match.
+        # Preset IDs are fixed, so they win over any palette match.
         preset = preset_scene_name(self._model_number(), handle)
         if preset:
             return preset
@@ -379,35 +381,59 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Poll loop
     # ------------------------------------------------------------------
 
+    async def _async_setup(self) -> None:
+        """Connect during setup so that a failure blocks setup.
+
+        Token rejections are retried here: each setup retry creates a new
+        coordinator, so the rejection counter would never reach its threshold.
+        """
+        # Scene names are resolved while connecting.
+        if self._scene_lookup is None:
+            await self.async_reload_scenes()
+        for _attempt in range(self._AUTH_FAILURE_THRESHOLD):
+            try:
+                await self._async_connect()
+            except UpdateFailed:
+                if self._consecutive_auth_failures == 0:
+                    raise  # Not a token rejection.
+                continue
+            return
+        # Unreachable: the last rejection raises ConfigEntryAuthFailed.
+        raise UpdateFailed("Token rejected repeatedly")
+
+    async def _async_connect(self) -> None:
+        """Open a session and read slow-changing data; raise UpdateFailed on failure."""
+        try:
+            self._session = await self._open_session()
+        except AuthRejectedError as exc:
+            # Device reachable but token invalid — re-pairing/onboarding needed.
+            self._consecutive_auth_failures += 1
+            if self._consecutive_auth_failures >= self._AUTH_FAILURE_THRESHOLD:
+                raise ConfigEntryAuthFailed(
+                    f"Token rejected by device after {self._consecutive_auth_failures} attempts"
+                ) from exc
+            raise UpdateFailed(
+                f"Token rejected (attempt {self._consecutive_auth_failures})"
+            ) from exc
+        except Exception as exc:
+            raise UpdateFailed(f"Cannot open session: {exc}") from exc
+        self._consecutive_auth_failures = 0
+        # Populate static data right after a fresh connection.
+        try:
+            await self._refresh_static_data()
+        except (SessionExpiredError, TimeoutError, OSError) as exc:
+            await self._safe_close()
+            raise UpdateFailed(
+                f"Connection lost while reading device diagnostics: {exc}"
+            ) from exc
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch device state; re-open session when needed."""
         if self._scene_lookup is None:
             await self.async_reload_scenes()
 
         if self._session is None:
-            try:
-                self._session = await self._open_session()
-            except AuthRejectedError as exc:
-                # Device reachable but token invalid — re-pairing/onboarding needed.
-                self._consecutive_auth_failures += 1
-                if self._consecutive_auth_failures >= self._AUTH_FAILURE_THRESHOLD:
-                    raise ConfigEntryAuthFailed(
-                        f"Token rejected by device after {self._consecutive_auth_failures} attempts"
-                    ) from exc
-                raise UpdateFailed(
-                    f"Token rejected (attempt {self._consecutive_auth_failures})"
-                ) from exc
-            except Exception as exc:
-                raise UpdateFailed(f"Cannot open session: {exc}") from exc
-            self._consecutive_auth_failures = 0
-            # Populate static data right after a fresh connection.
-            try:
-                await self._refresh_static_data()
-            except (SessionExpiredError, TimeoutError, OSError) as exc:
-                await self._safe_close()
-                raise UpdateFailed(
-                    f"Connection lost while reading device diagnostics: {exc}"
-                ) from exc
+            await self._async_connect()
 
         async def _query() -> tuple[dict[str, Any], bytes]:
             assert self._session is not None
@@ -415,6 +441,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             current_scene = await self._session.get_current_scene(timeout=10.0)
             return light, current_scene
 
+        self._light_written = {}
         try:
             light, current_scene = await _query()
         except SessionExpiredError:
@@ -466,7 +493,7 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         existing = self.data or {}
         return {
             **existing,
-            "light": light,
+            "light": {**light, **self._light_written},
             "current_scene": current_scene,
             "scene_handles": existing.get("scene_handles", []),
             "scene_names": existing.get("scene_names", {}),
@@ -475,6 +502,26 @@ class NanoleafLtpduCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
     # Service call helper
     # ------------------------------------------------------------------
+
+    async def async_set_light_state(self, **changes: Any) -> None:
+        """Write light settings and publish the accepted values without a poll.
+
+        A v3 poll takes over a second, and HA defers requested refreshes up to 10 s.
+        """
+        await self.async_service_call(lambda session: session.set_light_state(**changes))
+        keys = {
+            "on": "power",
+            "brightness": "brightness",
+            "hue": "hue",
+            "saturation": "saturation",
+            "color_temp": "color_temp",
+        }
+        accepted = {keys[key]: value for key, value in changes.items() if key in keys}
+        self._light_written.update(accepted)
+        existing = self.data or {}
+        self.async_set_updated_data(
+            {**existing, "light": {**(existing.get("light") or {}), **accepted}}
+        )
 
     async def async_service_call(
         self, action: Callable[[Session], Coroutine[Any, Any, _T]]

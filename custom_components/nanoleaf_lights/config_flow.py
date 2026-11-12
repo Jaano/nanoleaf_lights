@@ -85,7 +85,8 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         else:
             _LOGGER.debug("zeroconf: no eui64 in mDNS properties, matching by address")
-            self._async_abort_entries_match({CONF_IP_ADDRESS: host, CONF_PORT: port})
+        # Manual entries may have no unique ID.
+        self._async_abort_entries_match({CONF_IP_ADDRESS: host, CONF_PORT: port})
 
         self._discovery = {
             CONF_IP_ADDRESS: host,
@@ -112,6 +113,7 @@ class NanoleafLtpduConfigFlow(ConfigFlow, domain=DOMAIN):
             host = _strip_zone_id(user_input[CONF_IP_ADDRESS])
             port = user_input.get(CONF_PORT, DEFAULT_PORT)
             model = user_input.get(CONF_MODEL) or None
+            self._async_abort_entries_match({CONF_IP_ADDRESS: host, CONF_PORT: port})
 
             _LOGGER.debug(
                 "user: verifying reachability host=%s port=%d model=%s", host, port, model

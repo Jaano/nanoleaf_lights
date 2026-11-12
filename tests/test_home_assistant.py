@@ -79,7 +79,11 @@ def settings(monkeypatch):
     register("homeassistant")
     register("homeassistant.config_entries", ConfigEntry=object, ConfigEntryState=State)
     register(
-        "homeassistant.core", HomeAssistant=object, ServiceCall=object, SupportsResponse=Responses
+        "homeassistant.core",
+        HomeAssistant=object,
+        ServiceCall=object,
+        SupportsResponse=Responses,
+        callback=lambda method: method,
     )
     register(
         "homeassistant.const",
@@ -99,7 +103,9 @@ def settings(monkeypatch):
         "homeassistant.helpers.config_validation",
         string=vol.All(str),
         entity_ids_or_uuids=lambda value: [value] if isinstance(value, str) else value,
+        config_entry_only_config_schema=lambda domain: {"config_entry_only": domain},
     )
+    register("homeassistant.helpers.entity_registry", async_migrate_entries=AsyncMock())
     register("homeassistant.components")
     register("homeassistant.components.switch", SwitchEntity=type("SwitchEntity", (), {}))
     register("homeassistant.components.button", ButtonEntity=type("ButtonEntity", (), {}))
@@ -110,7 +116,11 @@ def settings(monkeypatch):
         SensorDeviceClass=SimpleNamespace(TIMESTAMP="timestamp"),
     )
     register(f"{package.__name__}.coordinator", NanoleafLtpduCoordinator=object)
-    register(f"{package.__name__}.entity", NanoleafLtpduEntity=BaseEntity)
+    register(
+        f"{package.__name__}.entity",
+        NanoleafLtpduEntity=BaseEntity,
+        entity_unique_id=lambda entry, suffix: f"{entry.unique_id or entry.entry_id}-{suffix}",
+    )
     register(f"{package.__name__}.nl_api", NanoleafCloudApi=object)
 
     def load(name):
@@ -771,7 +781,7 @@ async def test_setup_uses_own_device_even_with_saved_device_page_options(setting
     )
     runtime = SimpleNamespace(
         config_entry=entry,
-        async_refresh=AsyncMock(),
+        async_config_entry_first_refresh=AsyncMock(),
         data={"device": {"serial_number": "SERIAL", "eui64": "0011223344556677"}},
     )
     hass = SimpleNamespace(
@@ -781,6 +791,7 @@ async def test_setup_uses_own_device_even_with_saved_device_page_options(setting
     )
     monkeypatch.setattr(integration, "NanoleafLtpduCoordinator", lambda hass, entry: runtime)
     assert await integration.async_setup_entry(hass, entry)
+    runtime.async_config_entry_first_refresh.assert_awaited_once()
     assert entry.runtime_data is runtime
     entity = entity_module.NanoleafLtpduEntity(runtime)
     assert entity.device_info["identifiers"] == {(DOMAIN, "e20")}
@@ -904,11 +915,15 @@ async def test_light_white_temperature_bounds_and_write_agree(ha_modules, firmwa
     async def call(action):
         await action(device)
 
+    async def set_state(**changes):
+        await device.set_light_state(**changes)
+
     light = ha_modules.light.NanoleafLtpduLight.__new__(ha_modules.light.NanoleafLtpduLight)
     light.coordinator = SimpleNamespace(
         config_entry=SimpleNamespace(data={"model": "NL67"}),
         data={"device": {"model_number": "NL67", "firmware_version": firmware}},
         async_service_call=call,
+        async_set_light_state=set_state,
         async_request_refresh=AsyncMock(),
     )
     assert light.min_color_temp_kelvin == minimum
@@ -922,6 +937,9 @@ def _color_light(ha_modules, model: str, *, capabilities=None, light_state=None)
     async def call(action):
         await action(device)
 
+    async def set_state(**changes):
+        await device.set_light_state(**changes)
+
     data = {"device": {"model_number": model, "firmware_version": "1.6.49"}}
     if capabilities is not None:
         data["capabilities"] = capabilities
@@ -933,13 +951,16 @@ def _color_light(ha_modules, model: str, *, capabilities=None, light_state=None)
         config_entry=SimpleNamespace(data={"model": model}),
         data=data,
         async_service_call=call,
+        async_set_light_state=set_state,
         async_request_refresh=AsyncMock(),
     )
     return light, device
 
 
 async def test_nl62_light_is_hs_only_and_never_writes_color_temperature(ha_modules):
-    light, device = _color_light(ha_modules, "NL62", light_state={"power": True, "color_temp": None})
+    light, device = _color_light(
+        ha_modules, "NL62", light_state={"power": True, "color_temp": None}
+    )
     assert light.supported_color_modes == {"hs"}
     assert light.color_mode == "hs"
     await light.async_turn_on(color_temp_kelvin=2700)
@@ -1023,3 +1044,74 @@ async def test_scene_effect_missing_from_capabilities_is_rejected(settings):
     with pytest.raises(RuntimeError, match="does not support the fade animation"):
         await registry.invoke(hass, "preview_scene", {"scene": "police"}, ["a"])
     entries["a"].runtime_data.async_scene_action.assert_not_awaited()
+
+
+# -- Entity unique IDs and their migration ----------------------------------------------
+
+
+def test_entity_unique_ids_fall_back_to_the_entry_id(settings):
+    entity_module = settings.load_entity()
+    with_eui = SimpleNamespace(unique_id="0011223344556677", entry_id="entry-1")
+    manual_a = SimpleNamespace(unique_id=None, entry_id="entry-2")
+    manual_b = SimpleNamespace(unique_id=None, entry_id="entry-3")
+    assert entity_module.entity_unique_id(with_eui, "light") == "0011223344556677-light"
+    assert entity_module.entity_unique_id(manual_a, "light") == "entry-2-light"
+    assert entity_module.entity_unique_id(manual_b, "light") == "entry-3-light"
+    assert entity_module.device_key(manual_a) == "entry-2"
+
+
+@pytest.mark.asyncio
+async def test_legacy_none_unique_ids_are_migrated_to_the_entry_id(settings):
+    integration = settings.load_integration()
+    migrate = integration.er.async_migrate_entries
+    migrate.reset_mock()
+    hass = SimpleNamespace()
+    entry = SimpleNamespace(unique_id=None, entry_id="entry-2")
+    await integration._async_migrate_unique_ids(hass, entry)
+    migrate.assert_awaited_once()
+    assert migrate.await_args.args[:2] == (hass, "entry-2")
+    rename = migrate.await_args.args[2]
+    assert rename(SimpleNamespace(unique_id="None-light")) == {"new_unique_id": "entry-2-light"}
+    assert rename(SimpleNamespace(unique_id="None-power-loss-recovery")) == {
+        "new_unique_id": "entry-2-power-loss-recovery"
+    }
+    assert rename(SimpleNamespace(unique_id="entry-2-light")) is None
+
+
+@pytest.mark.asyncio
+async def test_entries_with_a_device_unique_id_are_not_migrated(settings):
+    integration = settings.load_integration()
+    migrate = integration.er.async_migrate_entries
+    migrate.reset_mock()
+    await integration._async_migrate_unique_ids(
+        SimpleNamespace(), SimpleNamespace(unique_id="0011223344556677", entry_id="entry-1")
+    )
+    migrate.assert_not_awaited()
+
+
+def test_integration_is_config_entry_only(settings):
+    integration = settings.load_integration()
+    assert integration.CONFIG_SCHEMA == {"config_entry_only": DOMAIN}
+
+
+# -- Light commands do not wait for a refresh -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_turning_on_and_off_publishes_state_without_requesting_a_refresh(ha_modules):
+    light, device = _color_light(ha_modules, "NL45", light_state={"power": False})
+    await light.async_turn_on(brightness=255)
+    device.set_light_state.assert_awaited_once_with(on=True, brightness=100)
+    await light.async_turn_off()
+    device.set_light_state.assert_awaited_with(on=False)
+    light.coordinator.async_request_refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_playing_an_effect_still_refreshes_the_current_scene(ha_modules):
+    light, device = _color_light(ha_modules, "NL45")
+    device.play_scene = AsyncMock()
+    light.coordinator.data["scene_names"] = {b"\x05": "Sunset"}
+    await light.async_turn_on(effect="Sunset")
+    device.play_scene.assert_awaited_once_with(b"\x05")
+    light.coordinator.async_request_refresh.assert_awaited_once()

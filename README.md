@@ -45,6 +45,14 @@ New firmware reports scene names directly. Older firmware stores palette data th
 
 ## Installation
 
+### Prerequisites
+
+- Home Assistant 2026.1 or newer.
+- A Thread border router (for example Apple TV, HomePod, Google Nest Hub or the Home Assistant Connect ZBT-1/ZBT-2) that Home Assistant can reach over IPv6.
+- The device already joined to that Thread network, for example through the Nanoleaf app or Apple Home (see [Adding a Device](#adding-a-device)).
+- The pairing code printed on the device label.
+- For HACS installs, [HACS](https://hacs.xyz/) itself.
+
 ### Option 1: HACS (recommended)
 
 [HACS](https://hacs.xyz/) is the Home Assistant Community Store. If you don't have it installed yet, follow the [HACS installation guide](https://hacs.xyz/docs/use/) first.
@@ -89,6 +97,26 @@ To recover without removing and re-adding the integration:
 3. Confirm the new address and advertised port. If the bulb was factory-reset or upgraded from the legacy protocol, enter its **Pairing Code** to obtain new credentials. For manual new-protocol pairing, also supply the advertised **Discovered Name**.
 
 The device's existing entities, history, and automations are preserved.
+
+### If a Device Is Unreachable at Startup
+
+Home Assistant checks that each device answers before creating its entities. If a device is powered off or unreachable when Home Assistant starts, its entry shows **Retrying setup** and Home Assistant retries automatically with increasing delays (up to a few minutes apart). The entities appear as soon as the device answers. If the device rejects the stored credentials, Home Assistant asks you to re-authenticate with the pairing code instead.
+
+### Removing the Integration
+
+To remove one device:
+
+1. Go to **Settings -> Devices & Services -> Nanoleaf Lights (++)**.
+2. Open the device's entry, click the **⋮** menu and choose **Delete**.
+
+Deleting an entry also asks the device to revoke this integration's pairing token, when the device is reachable. The device stays on your Thread network and keeps working with the Nanoleaf app, Apple Home or Matter.
+
+To remove the integration completely:
+
+1. Delete every entry as described above.
+2. Remove the files: in HACS, open **Nanoleaf Lights (++)**, click the **⋮** menu and choose **Remove**; for a manual installation, delete `config/custom_components/nanoleaf_lights/`.
+3. If you installed the [scene card](#custom-scene-upload-card), remove its dashboard resource and `config/www/nanoleaf-lights/`.
+4. Restart Home Assistant.
 
 ### Scene Support
 

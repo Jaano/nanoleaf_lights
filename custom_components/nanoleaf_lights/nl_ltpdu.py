@@ -343,7 +343,7 @@ def encode_palette_bytes(
     return bytes([len(runs)]) + b"".join(parts)
 
 
-# Direction byte of the flow and stripes effects (the app's linearDirectionTypeToInt).
+# Direction byte of the flow and stripes effects.
 SCENE_DIRECTIONS: dict[str, int] = {"left": 0, "right": 1, "up": 2, "down": 3}
 
 
@@ -447,9 +447,8 @@ def _parse_scene_data(raw: bytes) -> dict[str, Any] | None:
 
 _SCENES_PATH = Path(__file__).parent / "scenes.json"
 
-# Fixed Secretlab MAGRGB (NL62) preset scenes. The Nanoleaf app names these by scene ID,
-# not by palette, and they are not in the cloud scene database. IDs 244-249 are written
-# by the app at pairing; 250-254 are named by the app too but not written by it.
+# Secretlab MAGRGB (NL62) preset scenes, named by scene ID. They are not in the cloud
+# scene database, so palette matching cannot name them.
 SECRETLAB_SCENE_NAMES: dict[int, str] = {
     244: "Cyberpunk 2077",
     245: "VALORANT",
@@ -466,7 +465,7 @@ SECRETLAB_SCENE_NAMES: dict[int, str] = {
 
 
 def preset_scene_name(model: str | None, handle: bytes) -> str | None:
-    """Return the app's fixed name for a model-specific preset scene ID, if any."""
+    """Return the fixed name of a model-specific preset scene ID, if any."""
     if (model or "").upper() == "NL62" and len(handle) == 1:
         return SECRETLAB_SCENE_NAMES.get(handle[0])
     return None
@@ -488,7 +487,7 @@ class SceneLookup:
         self._exact: dict[str, tuple[str, str]] = {}
         self._sorted: dict[str, tuple[str, str]] = {}
         # prefix[n] maps the hex of the first n colors to (name, uuid).
-        # Used when the device truncates palettes (app caps at 7 colors).
+        # Used when the device truncates palettes (at most 7 colors).
         self._prefix: dict[int, dict[str, tuple[str, str]]] = {}
         for e in db.get("effects") or []:
             name = e.get("name")
